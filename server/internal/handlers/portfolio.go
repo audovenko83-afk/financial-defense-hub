@@ -69,6 +69,73 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": token, "email": user.Email})
 }
+type oauthRequest struct {
+	Email    string `json:"email"`
+	Name     string `json:"name"`
+	Token    string `json:"token"`
+	Provider string `json:"provider"`
+}
+
+func GoogleAuthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req oauthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Email) == "" {
+		http.Error(w, "Помилка авторизації: відсутній email", http.StatusBadRequest)
+		return
+	}
+
+	user, err := store.GetOrCreateOAuthUser(req.Email, "google")
+	if err != nil {
+		http.Error(w, "Не вдалося авторизувати через Google", http.StatusInternalServerError)
+		return
+	}
+
+	token, err := store.CreateSession(user.ID)
+	if err != nil {
+		http.Error(w, "Не вдалося створити сесію", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"token": token,
+		"email": user.Email,
+	})
+}
+
+func GitHubAuthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req oauthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Email) == "" {
+		http.Error(w, "Помилка авторизації: відсутній email", http.StatusBadRequest)
+		return
+	}
+
+	user, err := store.GetOrCreateOAuthUser(req.Email, "github")
+	if err != nil {
+		http.Error(w, "Не вдалося авторизувати через GitHub", http.StatusInternalServerError)
+		return
+	}
+
+	token, err := store.CreateSession(user.ID)
+	if err != nil {
+		http.Error(w, "Не вдалося створити сесію", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"token": token,
+		"email": user.Email,
+	})
+}
+
 func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)

@@ -229,6 +229,35 @@ func (s *Storage) CreateUser(email string, password string) (User, error) {
 	_, _ = s.DB.Exec("INSERT OR REPLACE INTO portfolio_meta (key, value) VALUES (?, ?)", cashKey(user.ID), 10000.0)
 	return user, nil
 }
+func (s *Storage) GetOrCreateOAuthUser(email string, provider string) (User, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return User{}, errors.New("email не може бути порожнім")
+	}
+
+	var user User
+	err := s.DB.QueryRow("SELECT id, email, password_hash FROM users WHERE email = ?", email).Scan(&user.ID, &user.Email, &user.PasswordHash)
+	if err == nil {
+		return user, nil
+	}
+
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return User{}, err
+	}
+	user = User{
+		ID:           hex.EncodeToString(idBytes),
+		Email:        email,
+		PasswordHash: "oauth:" + provider,
+	}
+	_, err = s.DB.Exec("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)", user.ID, user.Email, user.PasswordHash)
+	if err != nil {
+		return User{}, err
+	}
+	_, _ = s.DB.Exec("INSERT OR REPLACE INTO portfolio_meta (key, value) VALUES (?, ?)", cashKey(user.ID), 10000.0)
+	return user, nil
+}
+
 
 func (s *Storage) AuthenticateUser(email string, password string) (User, error) {
 	var user User

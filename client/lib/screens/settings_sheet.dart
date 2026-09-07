@@ -42,12 +42,16 @@ class _SettingsSheetState extends State<SettingsSheet> {
   final _serverUrlCtrl = TextEditingController(text: ApiConfig.baseUrl);
   String _pingResult = '';
   bool _isTesting = false;
+  bool _biometricsEnabled = true;
 
   @override
   void initState() {
     super.initState();
     SessionStore.readEmail().then((v) {
       if (mounted) setState(() => _email = v);
+    });
+    SessionStore.isBiometricsEnabled().then((v) {
+      if (mounted) setState(() => _biometricsEnabled = v);
     });
   }
 
@@ -163,9 +167,13 @@ class _SettingsSheetState extends State<SettingsSheet> {
             const SizedBox(height: 16),
             _buildProfileCard(),
             const SizedBox(height: 14),
-            _buildStrategyCard(),
+            _buildSecurityCard(),
             const SizedBox(height: 14),
-            _buildServerCard(),
+            _buildStrategyCard(),
+            if (SessionStore.isAdmin(_email)) ...[
+              const SizedBox(height: 14),
+              _buildServerCard(),
+            ],
             const SizedBox(height: 16),
             _buildActionButtons(),
             const SizedBox(height: 24),
@@ -202,9 +210,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
     );
   }
 
-  Widget _buildProfileCard() {
+  Widget _buildSecurityCard() {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: const Color(0xFF1A1F2C),
         borderRadius: BorderRadius.circular(18),
@@ -212,18 +220,97 @@ class _SettingsSheetState extends State<SettingsSheet> {
       ),
       child: Row(
         children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: const Color(0xFF00FF94).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.fingerprint_rounded, color: Color(0xFF00FF94), size: 22),
+          ),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Біометрія (Відбиток / Face ID)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                SizedBox(height: 2),
+                Text('Швидкий та захищений вхід у додаток', style: TextStyle(color: Colors.white54, fontSize: 11)),
+              ],
+            ),
+          ),
+          Switch(
+            value: _biometricsEnabled,
+            activeThumbColor: const Color(0xFF00FF94),
+            onChanged: (val) async {
+              setState(() => _biometricsEnabled = val);
+              await SessionStore.setBiometricsEnabled(val);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProfileCard() {
+    final bool isAdmin = SessionStore.isAdmin(_email);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1F2C),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: isAdmin ? const Color(0xFFFFD700).withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.06),
+        ),
+      ),
+      child: Row(
+        children: [
           CircleAvatar(
             radius: 20,
-            backgroundColor: const Color(0xFF00FF94).withValues(alpha: 0.15),
-            child: const Icon(Icons.person_rounded, color: Color(0xFF00FF94), size: 20),
+            backgroundColor: isAdmin
+                ? const Color(0xFFFFD700).withValues(alpha: 0.2)
+                : const Color(0xFF00FF94).withValues(alpha: 0.15),
+            child: Icon(
+              isAdmin ? Icons.admin_panel_settings_rounded : Icons.person_rounded,
+              color: isAdmin ? const Color(0xFFFFD700) : const Color(0xFF00FF94),
+              size: 20,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(_email ?? 'Користувач', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                const Text('Авторизовано • Сесія активна', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        _email ?? 'Користувач',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (isAdmin) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFD700).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'Адмін',
+                          style: TextStyle(color: Color(0xFFFFD700), fontSize: 10, fontWeight: FontWeight.w900),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                Text(
+                  isAdmin ? 'Адміністратор системи • Повний доступ' : 'Авторизовано • Сесія активна',
+                  style: TextStyle(color: isAdmin ? const Color(0xFFFFD700).withValues(alpha: 0.8) : Colors.white54, fontSize: 11),
+                ),
               ],
             ),
           ),

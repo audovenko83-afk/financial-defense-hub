@@ -29,6 +29,9 @@ func main() {
 	mux.HandleFunc("/api/auth/register", handlers.RegisterHandler)
 	mux.HandleFunc("/api/auth/login", handlers.LoginHandler)
 	mux.HandleFunc("/api/auth/account", handlers.DeleteAccountHandler)
+	mux.HandleFunc("/api/auth/google", handlers.GoogleAuthHandler)
+	mux.HandleFunc("/api/auth/github", handlers.GitHubAuthHandler)
+
 	mux.HandleFunc("/api/transactions", handlers.AddTransactionHandler)
 	mux.HandleFunc("/api/transactions/sell", handlers.SellTransactionHandler)
 	mux.HandleFunc("/api/cash/deposit", handlers.DepositCashHandler)

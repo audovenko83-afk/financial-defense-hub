@@ -62,6 +62,35 @@ class ApiConfig {
 class SessionStore {
   static const _tokenKey = 'auth_token';
   static const _emailKey = 'user_email';
+  static const _biometricsKey = 'biometrics_enabled';
+
+  static const List<String> adminEmails = [
+    'udovenko20121993@gmail.com',
+    'brockerqwe@gmail.com',
+    'audovenko83@gmail.com',
+  ];
+
+  static bool isAdmin(String? email) {
+    if (email == null) return false;
+    final normalized = email.trim().toLowerCase();
+    return adminEmails.any((e) => e.toLowerCase() == normalized);
+  }
+
+  static Future<bool> isBiometricsEnabled() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(_biometricsKey) ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static Future<void> setBiometricsEnabled(bool enabled) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_biometricsKey, enabled);
+    } catch (_) {}
+  }
 
   static Future<String?> readToken() async {
     try {
