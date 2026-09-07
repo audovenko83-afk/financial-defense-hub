@@ -1,3 +1,6 @@
+*.apk
+server/bin/
+
 # Executables and binaries
 *.exe
 *.exe~
