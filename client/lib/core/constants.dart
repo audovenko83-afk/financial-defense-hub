@@ -65,8 +65,6 @@ class SessionStore {
   static const _biometricsKey = 'biometrics_enabled';
 
   static const List<String> adminEmails = [
-    'udovenko20121993@gmail.com',
-    'brockerqwe@gmail.com',
     'audovenko83@gmail.com',
   ];
 
