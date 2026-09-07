@@ -21,7 +21,11 @@ func userIDFromRequest(r *http.Request) (string, error) {
 	if !strings.HasPrefix(header, "Bearer ") {
 		return "", errors.New("потрібна авторизація")
 	}
-	return store.UserIDForSession(strings.TrimPrefix(header, "Bearer "))
+	userID, err := store.UserIDForSession(strings.TrimPrefix(header, "Bearer "))
+	if err == nil && userID != "" {
+		store.TouchUserActivity(userID)
+	}
+	return userID, err
 }
 
 type credentialsRequest struct {
@@ -444,6 +448,183 @@ func InvestPlanHandler(w http.ResponseWriter, r *http.Request) {
 		"status":         "ok",
 		"invested_count": count,
 		"total_invested": total,
+	})
+}
+
+
+func isAdminEmail(email string) bool {
+	email = strings.ToLower(strings.TrimSpace(email))
+	return email == "audovenko83@gmail.com"
+}
+
+func AdminStatsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	email, err := store.GetUserEmail(userID)
+	if err != nil || !isAdminEmail(email) {
+		http.Error(w, "Доступ заборонено (лише для адміністратора)", http.StatusForbidden)
+		return
+	}
+	stats, err := store.GetAdminStats()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+type ModeRequest struct {
+	Mode string `json:"mode"`
+}
+
+func PortfolioModeHandler(w http.ResponseWriter, r *http.Request) {
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		mode := store.GetPortfolioMode(userID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"mode": mode})
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		var req ModeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Некоректний запит", http.StatusBadRequest)
+			return
+		}
+		if err := store.SetPortfolioMode(userID, req.Mode); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "mode": req.Mode})
+		return
+	}
+
+	http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+}
+
+type SaveIBKRConfigRequest struct {
+	FlexToken string `json:"flex_token"`
+	QueryID   string `json:"query_id"`
+}
+
+func GetIBKRConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	info, err := store.GetIBKRConnection(userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(info)
+}
+
+func SaveIBKRConfigHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	var req SaveIBKRConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FlexToken == "" || req.QueryID == "" {
+		http.Error(w, "Flex Token та Query ID є обов'язковими", http.StatusBadRequest)
+		return
+	}
+
+	if err := store.SaveIBKRConnection(userID, req.FlexToken, req.QueryID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	report, syncErr := services.DefaultIBKRService.FetchFlexReport(req.FlexToken, req.QueryID)
+	if syncErr != nil {
+		store.SaveIBKRSyncFailure(userID, syncErr)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  "saved_with_warning",
+			"warning": "Налаштування збережено, але синхронізація повернула помилку: " + syncErr.Error(),
+		})
+		return
+	}
+
+	if err := store.SaveIBKRSyncSuccess(userID, report.AccountID, report.Cash, report.Positions); err != nil {
+		store.SaveIBKRSyncFailure(userID, err)
+		http.Error(w, "Помилка збереження даних синхронізації: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":          "ok",
+		"account_id":      report.AccountID,
+		"positions_count": len(report.Positions),
+		"cash":            report.Cash,
+	})
+}
+
+func SyncIBKRHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	token, queryID, err := store.GetIBKRCredentials(userID)
+	if err != nil {
+		http.Error(w, "IBKR ще не налаштовано. Будь ласка, введіть Flex Token та Query ID у налаштуваннях.", http.StatusBadRequest)
+		return
+	}
+
+	report, syncErr := services.DefaultIBKRService.FetchFlexReport(token, queryID)
+	if syncErr != nil {
+		store.SaveIBKRSyncFailure(userID, syncErr)
+		http.Error(w, "Помилка синхронізації з IBKR: "+syncErr.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := store.SaveIBKRSyncSuccess(userID, report.AccountID, report.Cash, report.Positions); err != nil {
+		store.SaveIBKRSyncFailure(userID, err)
+		http.Error(w, "Помилка збереження даних: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":          "ok",
+		"account_id":      report.AccountID,
+		"positions_count": len(report.Positions),
+		"cash":            report.Cash,
 	})
 }
 

@@ -234,7 +234,129 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       token: widget.token,
       onDepositRequested: _showDepositDialog,
       onLogoutRequested: _logout,
+      onPortfolioUpdated: _refreshData,
     );
+  }
+
+  Future<void> _syncIBKRFromPortfolio() async {
+    try {
+      final res = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/ibkr/sync'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (res.statusCode == 200) {
+        final body = jsonDecode(utf8.decode(res.bodyBytes));
+        _refreshData();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: const Color(0xFF00FF94),
+              content: Text(
+                'Синхронізація IBKR успішна! Оновлено ${body['positions_count']} позицій (Кеш: \$${body['cash']})',
+                style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+              ),
+            ),
+          );
+        }
+      } else {
+        throw Exception(res.body);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(backgroundColor: Colors.redAccent, content: Text('Помилка синхронізації IBKR: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmSwitchMode(bool toReal) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF161B26),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        title: Row(
+          children: [
+            Icon(
+              toReal ? Icons.warning_amber_rounded : Icons.sports_esports_rounded,
+              color: toReal ? const Color(0xFFFFB74D) : const Color(0xFF00FF94),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                toReal ? 'Перехід у РЕАЛЬНИЙ режим' : 'Повернення у ДЕМО-режим',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          toReal
+              ? '⚠️ УВАГА: Ви перемикаєтесь на відображення РЕАЛЬНИХ активів брокерського рахунку Interactive Brokers (IBKR).\n\n'
+                  '• Баланси та позиції відображатимуть фактичний стан рахунку за останнім Flex Query.\n'
+                  '• Віртуальні демо-угоди та тестовий баланс буде приховано.\n\n'
+                  'Підтвердити перехід на реальні дані?'
+              : '🎮 Ви повертаєтесь до безпечного ДЕМО-симулятора Million Dollar Way.\n\n'
+                  '• Фактичні баланси IBKR будуть приховані.\n'
+                  '• Ви зможете вільно тестувати розподіл на 40 акцій без фінансового ризику.\n\n'
+                  'Повернутися до демо-режиму?',
+          style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Скасувати', style: TextStyle(color: Colors.white54)),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: toReal ? const Color(0xFFFFB74D) : const Color(0xFF00FF94),
+              foregroundColor: Colors.black,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(
+              toReal ? 'Так, увімкнути IBKR' : 'Так, перейти у Демо',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      final res = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/portfolio/mode'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${widget.token}',
+        },
+        body: jsonEncode({'mode': toReal ? 'real' : 'demo'}),
+      );
+      if (res.statusCode == 200) {
+        _refreshData();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: toReal ? const Color(0xFF00FF94) : const Color(0xFF00E5FF),
+              content: Text(
+                toReal
+                    ? '🟢 Режим змінено: Реальні дані (Interactive Brokers)'
+                    : '🎮 Режим змінено: Демо-симулятор',
+                style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+              ),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(backgroundColor: Colors.redAccent, content: Text('Помилка зміни режиму: $e')),
+        );
+      }
+    }
   }
   void _showBuyDialog(double currentCash) {
     final tickerCtrl = TextEditingController();
@@ -518,6 +640,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
       children: [
+        _buildModeBannerCard(data),
+        const SizedBox(height: 14),
         _buildGoalMilestoneCard(data),
         const SizedBox(height: 14),
         _buildHeaderCard(data),
@@ -529,7 +653,12 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text('АКТИВНІ ПОЗИЦІЇ (РЕАЛЬНИЙ РИНОК)', style: TextStyle(color: Colors.white38, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 1.2)),
+            Text(
+              data.mode == 'real'
+                  ? 'АКТИВИ IBKR (РЕАЛЬНИЙ РАХУНОК)'
+                  : 'АКТИВНІ ПОЗИЦІЇ (СИМУЛЯТОР)',
+              style: const TextStyle(color: Colors.white38, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 1.2),
+            ),
             Text('${data.positions.length} активів', style: const TextStyle(color: Color(0xFF00FF94), fontSize: 12, fontWeight: FontWeight.bold)),
           ],
         ),
@@ -568,6 +697,107 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       ],
     );
   }
+
+  Widget _buildModeBannerCard(PortfolioData data) {
+    final bool isReal = data.mode == 'real';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF161B26),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: isReal ? const Color(0xFF00FF94).withValues(alpha: 0.35) : const Color(0xFF00E5FF).withValues(alpha: 0.25),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: isReal ? const Color(0xFF00FF94).withValues(alpha: 0.15) : const Color(0xFF00E5FF).withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              isReal ? Icons.verified_rounded : Icons.sports_esports_rounded,
+              color: isReal ? const Color(0xFF00FF94) : const Color(0xFF00E5FF),
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      isReal ? 'РЕАЛЬНИЙ IBKR' : 'ДЕМО-СИМУЛЯТОР',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 12,
+                        letterSpacing: 0.5,
+                        color: isReal ? const Color(0xFF00FF94) : const Color(0xFF00E5FF),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: isReal ? const Color(0xFF00FF94).withValues(alpha: 0.15) : const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        isReal ? 'LIVE' : 'VIRTUAL',
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w900,
+                          color: isReal ? const Color(0xFF00FF94) : const Color(0xFF00E5FF),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  isReal
+                      ? (data.ibkrAccountId?.isNotEmpty == true
+                          ? 'Акаунт: ${data.ibkrAccountId}'
+                          : 'Синхронізація через Flex Web Service')
+                      : 'Навчальний портфель Million Dollar Way',
+                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          if (isReal && data.ibkrConfigured) ...[
+            IconButton(
+              tooltip: 'Синхронізувати з IBKR',
+              icon: const Icon(Icons.sync_rounded, color: Color(0xFF00FF94), size: 20),
+              onPressed: _syncIBKRFromPortfolio,
+            ),
+          ],
+          TextButton(
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+            ),
+            onPressed: () => _confirmSwitchMode(!isReal),
+            child: Text(
+              isReal ? 'В Демо' : 'В IBKR',
+              style: TextStyle(
+                color: isReal ? const Color(0xFF00E5FF) : const Color(0xFF00FF94),
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
 
   Widget _buildGoalMilestoneCard(PortfolioData data) {
     const double goal = 1000000.0;

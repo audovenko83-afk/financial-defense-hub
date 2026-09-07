@@ -69,6 +69,7 @@ class Dividend {
 }
 
 class PortfolioData {
+  final String mode; // 'demo' | 'real'
   final double totalValue;
   final double cash;
   final double investedValue;
@@ -77,8 +78,12 @@ class PortfolioData {
   final double totalPnLPercent;
   final List<Position> positions;
   final List<Dividend> dividends;
+  final bool ibkrConfigured;
+  final String? ibkrLastSyncAt;
+  final String? ibkrAccountId;
 
   PortfolioData({
+    this.mode = 'demo',
     required this.totalValue,
     required this.cash,
     required this.investedValue,
@@ -87,6 +92,9 @@ class PortfolioData {
     required this.totalPnLPercent,
     required this.positions,
     required this.dividends,
+    this.ibkrConfigured = false,
+    this.ibkrLastSyncAt,
+    this.ibkrAccountId,
   });
 
   factory PortfolioData.fromJson(Map<String, dynamic> json) {
@@ -99,6 +107,7 @@ class PortfolioData {
             .toList() ??
         [];
     return PortfolioData(
+      mode: json['mode'] as String? ?? 'demo',
       totalValue: (json['total_value'] as num?)?.toDouble() ?? 0.0,
       cash: (json['cash'] as num?)?.toDouble() ?? 0.0,
       investedValue: (json['invested_value'] as num?)?.toDouble() ?? 0.0,
@@ -107,6 +116,130 @@ class PortfolioData {
       totalPnLPercent: (json['total_pnl_percent'] as num?)?.toDouble() ?? 0.0,
       positions: posList,
       dividends: divList,
+      ibkrConfigured: json['ibkr_configured'] as bool? ?? false,
+      ibkrLastSyncAt: json['ibkr_last_sync_at'] as String?,
+      ibkrAccountId: json['ibkr_account_id'] as String?,
+    );
+  }
+}
+
+class AdminUserInfo {
+  final String id;
+  final String email;
+  final String provider;
+  final String createdAt;
+  final String lastSeenAt;
+  final String portfolioMode;
+  final double totalValue;
+
+  AdminUserInfo({
+    required this.id,
+    required this.email,
+    required this.provider,
+    required this.createdAt,
+    required this.lastSeenAt,
+    required this.portfolioMode,
+    required this.totalValue,
+  });
+
+  factory AdminUserInfo.fromJson(Map<String, dynamic> json) {
+    return AdminUserInfo(
+      id: json['id'] ?? '',
+      email: json['email'] ?? '',
+      provider: json['provider'] ?? 'email',
+      createdAt: json['created_at'] ?? '',
+      lastSeenAt: json['last_seen_at'] ?? '',
+      portfolioMode: json['portfolio_mode'] ?? 'demo',
+      totalValue: (json['total_value'] as num?)?.toDouble() ?? 0.0,
+    );
+  }
+
+  String get friendlyLastSeen {
+    if (lastSeenAt.isEmpty) return 'Невідомо';
+    try {
+      final seenTime = DateTime.parse(lastSeenAt).toUtc();
+      final diff = DateTime.now().toUtc().difference(seenTime);
+      if (diff.inSeconds < 60) return 'Тільки що онлайн';
+      if (diff.inMinutes < 60) return '${diff.inMinutes} хв тому';
+      if (diff.inHours < 24) return '${diff.inHours} год тому';
+      if (diff.inDays == 1) return 'Вчора';
+      if (diff.inDays < 7) return '${diff.inDays} дн. тому';
+      if (diff.inDays < 30) return '${(diff.inDays / 7).floor()} тиж. тому';
+      return '${(diff.inDays / 30).floor()} міс. тому';
+    } catch (_) {
+      return lastSeenAt;
+    }
+  }
+
+  String get friendlyCreatedAt {
+    if (createdAt.isEmpty) return '';
+    try {
+      final dt = DateTime.parse(createdAt).toLocal();
+      return '${dt.day.toString().padLeft(2, '0')}.${dt.month.toString().padLeft(2, '0')}.${dt.year}';
+    } catch (_) {
+      return createdAt;
+    }
+  }
+}
+
+class AdminStats {
+  final int totalUsers;
+  final int activeToday;
+  final int active7d;
+  final List<AdminUserInfo> users;
+
+  AdminStats({
+    required this.totalUsers,
+    required this.activeToday,
+    required this.active7d,
+    required this.users,
+  });
+
+  factory AdminStats.fromJson(Map<String, dynamic> json) {
+    final list = (json['users'] as List?)
+            ?.map((u) => AdminUserInfo.fromJson(u as Map<String, dynamic>))
+            .toList() ??
+        [];
+    return AdminStats(
+      totalUsers: json['total_users'] as int? ?? 0,
+      activeToday: json['active_today'] as int? ?? 0,
+      active7d: json['active_7d'] as int? ?? 0,
+      users: list,
+    );
+  }
+}
+
+class IBKRConfig {
+  final bool configured;
+  final String queryId;
+  final String tokenMasked;
+  final String lastSyncAt;
+  final String syncStatus;
+  final String errorMessage;
+  final String accountId;
+  final String mode;
+
+  IBKRConfig({
+    required this.configured,
+    required this.queryId,
+    required this.tokenMasked,
+    required this.lastSyncAt,
+    required this.syncStatus,
+    required this.errorMessage,
+    required this.accountId,
+    required this.mode,
+  });
+
+  factory IBKRConfig.fromJson(Map<String, dynamic> json) {
+    return IBKRConfig(
+      configured: json['configured'] as bool? ?? false,
+      queryId: json['query_id'] as String? ?? '',
+      tokenMasked: json['token_masked'] as String? ?? '',
+      lastSyncAt: json['last_sync_at'] as String? ?? '',
+      syncStatus: json['sync_status'] as String? ?? '',
+      errorMessage: json['error_message'] as String? ?? '',
+      accountId: json['account_id'] as String? ?? '',
+      mode: json['mode'] as String? ?? 'demo',
     );
   }
 }

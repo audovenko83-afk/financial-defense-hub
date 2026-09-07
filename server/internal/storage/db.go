@@ -62,6 +62,7 @@ type Dividend struct {
 }
 
 type PortfolioData struct {
+	Mode            string     `json:"mode"`
 	TotalValue      float64    `json:"total_value"`
 	Cash            float64    `json:"cash"`
 	InvestedValue   float64    `json:"invested_value"`
@@ -70,6 +71,37 @@ type PortfolioData struct {
 	TotalPnLPercent float64    `json:"total_pnl_percent"`
 	Positions       []Position `json:"positions"`
 	Dividends       []Dividend `json:"dividends"`
+	IBKRConfigured  bool       `json:"ibkr_configured"`
+	IBKRLastSyncAt  string     `json:"ibkr_last_sync_at,omitempty"`
+	IBKRAccountID   string     `json:"ibkr_account_id,omitempty"`
+}
+
+type AdminUserInfo struct {
+	ID            string  `json:"id"`
+	Email         string  `json:"email"`
+	Provider      string  `json:"provider"`
+	CreatedAt     string  `json:"created_at"`
+	LastSeenAt    string  `json:"last_seen_at"`
+	PortfolioMode string  `json:"portfolio_mode"`
+	TotalValue    float64 `json:"total_value"`
+}
+
+type AdminStatsResponse struct {
+	TotalUsers  int             `json:"total_users"`
+	ActiveToday int             `json:"active_today"`
+	Active7d    int             `json:"active_7d"`
+	Users       []AdminUserInfo `json:"users"`
+}
+
+type IBKRConnectionInfo struct {
+	Configured   bool   `json:"configured"`
+	QueryID      string `json:"query_id"`
+	TokenMasked  string `json:"token_masked"`
+	LastSyncAt   string `json:"last_sync_at"`
+	SyncStatus   string `json:"sync_status"`
+	ErrorMessage string `json:"error_message"`
+	AccountID    string `json:"account_id"`
+	Mode         string `json:"mode"`
 }
 
 func round2(v float64) float64 {
@@ -148,6 +180,33 @@ func NewStorage(dbPath string) (*Storage, error) {
 		user_id TEXT NOT NULL,
 		expires_at DATETIME NOT NULL
 	);
+	CREATE TABLE IF NOT EXISTS ibkr_connections (
+		user_id TEXT PRIMARY KEY,
+		flex_token TEXT NOT NULL,
+		query_id TEXT NOT NULL,
+		last_sync_at DATETIME,
+		sync_status TEXT DEFAULT '',
+		error_message TEXT DEFAULT '',
+		account_id TEXT DEFAULT '',
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE IF NOT EXISTS ibkr_positions (
+		user_id TEXT NOT NULL,
+		ticker TEXT NOT NULL,
+		company_name TEXT DEFAULT '',
+		asset_class TEXT NOT NULL,
+		shares REAL NOT NULL,
+		average_buy_price REAL NOT NULL,
+		current_price REAL NOT NULL,
+		total_value REAL NOT NULL,
+		currency TEXT DEFAULT 'USD',
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (user_id, ticker)
+	);
+	CREATE TABLE IF NOT EXISTS ibkr_meta (
+		key TEXT PRIMARY KEY,
+		value REAL
+	);
 	`
 	if _, err := db.Exec(createBaseTables); err != nil {
 		return nil, err
@@ -201,6 +260,8 @@ func NewStorage(dbPath string) (*Storage, error) {
 	_ = addColumnIfMissing(db, "transactions", "total_amount", "REAL DEFAULT 0")
 	_ = addColumnIfMissing(db, "positions", "company_name", "TEXT DEFAULT ''")
 	_ = addColumnIfMissing(db, "positions", "average_buy_price", "REAL DEFAULT 0")
+	_ = addColumnIfMissing(db, "users", "last_seen_at", "DATETIME DEFAULT CURRENT_TIMESTAMP")
+	_ = addColumnIfMissing(db, "users", "portfolio_mode", "TEXT DEFAULT 'demo'")
 
 	var exists int
 	db.QueryRow("SELECT COUNT(*) FROM portfolio_meta WHERE key = 'cash'").Scan(&exists)
@@ -610,6 +671,76 @@ func (s *Storage) InvestPlan(userID string, amountPerStock float64, items []Stoc
 }
 
 func (s *Storage) GetPortfolio(userID string) (PortfolioData, error) {
+	mode := s.GetPortfolioMode(userID)
+
+	var ibkrConfigured bool
+	var ibkrLastSyncAt, ibkrAccountID string
+	_ = s.DB.QueryRow(`
+		SELECT COALESCE(query_id, '') != '', COALESCE(last_sync_at, ''), COALESCE(account_id, '')
+		FROM ibkr_connections WHERE user_id = ?
+	`, userID).Scan(&ibkrConfigured, &ibkrLastSyncAt, &ibkrAccountID)
+
+	if mode == "real" {
+		var cash float64
+		_ = s.DB.QueryRow("SELECT value FROM ibkr_meta WHERE key = ?", cashKey(userID)).Scan(&cash)
+
+		rows, err := s.DB.Query("SELECT ticker, company_name, asset_class, shares, average_buy_price, current_price, total_value, currency FROM ibkr_positions WHERE user_id = ?", userID)
+		if err != nil {
+			return PortfolioData{Mode: mode, IBKRConfigured: ibkrConfigured, IBKRLastSyncAt: ibkrLastSyncAt, IBKRAccountID: ibkrAccountID, Positions: []Position{}, Dividends: []Dividend{}}, nil
+		}
+		defer rows.Close()
+
+		var positions []Position
+		var totalAssets, totalInvested float64
+		for rows.Next() {
+			var p Position
+			if err := rows.Scan(&p.Ticker, &p.CompanyName, &p.AssetClass, &p.Shares, &p.AverageBuyPrice, &p.CurrentPrice, &p.TotalValue, &p.Currency); err != nil {
+				continue
+			}
+			quote, quoteErr := services.DefaultMarketService.FetchQuote(p.Ticker)
+			if quoteErr == nil && quote.Price > 0 {
+				p.CurrentPrice = quote.Price
+				if p.CompanyName == "" || p.CompanyName == p.Ticker {
+					p.CompanyName = quote.Name
+				}
+				p.DayChangePercent = quote.ChangePercent
+				p.TotalValue = round2(p.Shares * quote.Price)
+			}
+			costBasis := round2(p.Shares * p.AverageBuyPrice)
+			p.UnrealizedPnL = round2(p.TotalValue - costBasis)
+			if p.AverageBuyPrice > 0 {
+				p.UnrealizedPnLPercent = round2((p.CurrentPrice - p.AverageBuyPrice) / p.AverageBuyPrice * 100)
+			}
+			totalAssets += p.TotalValue
+			totalInvested += costBasis
+			positions = append(positions, p)
+		}
+		if positions == nil {
+			positions = []Position{}
+		}
+
+		totalPnL := round2(totalAssets - totalInvested)
+		totalPnLPercent := 0.0
+		if totalInvested > 0 {
+			totalPnLPercent = round2((totalAssets - totalInvested) / totalInvested * 100)
+		}
+
+		return PortfolioData{
+			Mode:            "real",
+			TotalValue:      round2(cash + totalAssets),
+			Cash:            round2(cash),
+			InvestedValue:   round2(totalInvested),
+			TotalDividends:  0.0,
+			TotalPnL:        totalPnL,
+			TotalPnLPercent: totalPnLPercent,
+			Positions:       positions,
+			Dividends:       []Dividend{},
+			IBKRConfigured:  ibkrConfigured,
+			IBKRLastSyncAt:  ibkrLastSyncAt,
+			IBKRAccountID:   ibkrAccountID,
+		}, nil
+	}
+
 	var cash float64
 	err := s.DB.QueryRow("SELECT value FROM portfolio_meta WHERE key = ?", cashKey(userID)).Scan(&cash)
 	if err != nil {
@@ -675,6 +806,7 @@ func (s *Storage) GetPortfolio(userID string) (PortfolioData, error) {
 	}
 
 	return PortfolioData{
+		Mode:            "demo",
 		TotalValue:      round2(cash + totalAssets),
 		Cash:            round2(cash),
 		InvestedValue:   round2(totalInvestedInPositions),
@@ -683,6 +815,9 @@ func (s *Storage) GetPortfolio(userID string) (PortfolioData, error) {
 		TotalPnLPercent: totalPnLPercent,
 		Positions:       positions,
 		Dividends:       dividends,
+		IBKRConfigured:  ibkrConfigured,
+		IBKRLastSyncAt:  ibkrLastSyncAt,
+		IBKRAccountID:   ibkrAccountID,
 	}, nil
 }
 
@@ -738,3 +873,190 @@ func (s *Storage) GetTransactions(userID string) ([]Transaction, error) {
 	}
 	return list, nil
 }
+
+func (s *Storage) TouchUserActivity(userID string) {
+	if userID == "" || userID == LegacyUserID {
+		return
+	}
+	_, _ = s.DB.Exec("UPDATE users SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?", userID)
+}
+
+func (s *Storage) GetUserEmail(userID string) (string, error) {
+	var email string
+	err := s.DB.QueryRow("SELECT email FROM users WHERE id = ?", userID).Scan(&email)
+	return email, err
+}
+
+func (s *Storage) GetPortfolioMode(userID string) string {
+	var mode string
+	err := s.DB.QueryRow("SELECT COALESCE(portfolio_mode, 'demo') FROM users WHERE id = ?", userID).Scan(&mode)
+	if err != nil || mode == "" {
+		return "demo"
+	}
+	return mode
+}
+
+func (s *Storage) SetPortfolioMode(userID string, mode string) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode != "demo" && mode != "real" {
+		return errors.New("невідомий режим (дозволено: demo або real)")
+	}
+	_, err := s.DB.Exec("UPDATE users SET portfolio_mode = ? WHERE id = ?", mode, userID)
+	return err
+}
+
+func (s *Storage) GetAdminStats() (AdminStatsResponse, error) {
+	var resp AdminStatsResponse
+	_ = s.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&resp.TotalUsers)
+	_ = s.DB.QueryRow("SELECT COUNT(*) FROM users WHERE last_seen_at >= datetime('now', '-1 day')").Scan(&resp.ActiveToday)
+	_ = s.DB.QueryRow("SELECT COUNT(*) FROM users WHERE last_seen_at >= datetime('now', '-7 days')").Scan(&resp.Active7d)
+
+	rows, err := s.DB.Query(`
+		SELECT id, email, password_hash, COALESCE(created_at, ''), COALESCE(last_seen_at, ''), COALESCE(portfolio_mode, 'demo')
+		FROM users
+		ORDER BY last_seen_at DESC
+	`)
+	if err != nil {
+		return resp, err
+	}
+	defer rows.Close()
+
+	resp.Users = make([]AdminUserInfo, 0)
+	for rows.Next() {
+		var u AdminUserInfo
+		var passHash string
+		if err := rows.Scan(&u.ID, &u.Email, &passHash, &u.CreatedAt, &u.LastSeenAt, &u.PortfolioMode); err != nil {
+			continue
+		}
+		if strings.HasPrefix(passHash, "oauth:") {
+			u.Provider = strings.TrimPrefix(passHash, "oauth:")
+		} else {
+			u.Provider = "email"
+		}
+
+		var cash float64
+		if u.PortfolioMode == "real" {
+			_ = s.DB.QueryRow("SELECT COALESCE(value, 0) FROM ibkr_meta WHERE key = ?", cashKey(u.ID)).Scan(&cash)
+			var posVal float64
+			_ = s.DB.QueryRow("SELECT COALESCE(SUM(total_value), 0) FROM ibkr_positions WHERE user_id = ?", u.ID).Scan(&posVal)
+			u.TotalValue = round2(cash + posVal)
+		} else {
+			_ = s.DB.QueryRow("SELECT COALESCE(value, 0) FROM portfolio_meta WHERE key = ?", cashKey(u.ID)).Scan(&cash)
+			var posVal float64
+			_ = s.DB.QueryRow("SELECT COALESCE(SUM(total_value), 0) FROM positions WHERE user_id = ?", u.ID).Scan(&posVal)
+			u.TotalValue = round2(cash + posVal)
+		}
+		resp.Users = append(resp.Users, u)
+	}
+
+	return resp, nil
+}
+
+func (s *Storage) GetIBKRConnection(userID string) (IBKRConnectionInfo, error) {
+	mode := s.GetPortfolioMode(userID)
+	var info IBKRConnectionInfo
+	info.Mode = mode
+
+	var token, queryID, lastSync, status, errStr, accID string
+	err := s.DB.QueryRow(`
+		SELECT flex_token, query_id, COALESCE(last_sync_at, ''), COALESCE(sync_status, ''), COALESCE(error_message, ''), COALESCE(account_id, '')
+		FROM ibkr_connections WHERE user_id = ?
+	`, userID).Scan(&token, &queryID, &lastSync, &status, &errStr, &accID)
+
+	if err == nil && queryID != "" {
+		info.Configured = true
+		info.QueryID = queryID
+		info.LastSyncAt = lastSync
+		info.SyncStatus = status
+		info.ErrorMessage = errStr
+		info.AccountID = accID
+		if len(token) > 6 {
+			info.TokenMasked = strings.Repeat("*", len(token)-4) + token[len(token)-4:]
+		} else {
+			info.TokenMasked = "******"
+		}
+	}
+
+	return info, nil
+}
+
+func (s *Storage) SaveIBKRConnection(userID, token, queryID string) error {
+	token = strings.TrimSpace(token)
+	queryID = strings.TrimSpace(queryID)
+	if token == "" || queryID == "" {
+		return errors.New("токен та Query ID не можуть бути порожніми")
+	}
+	_, err := s.DB.Exec(`
+		INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(user_id) DO UPDATE SET
+			flex_token = excluded.flex_token,
+			query_id = excluded.query_id,
+			updated_at = CURRENT_TIMESTAMP
+	`, userID, token, queryID)
+	return err
+}
+
+func (s *Storage) GetIBKRCredentials(userID string) (string, string, error) {
+	var token, queryID string
+	err := s.DB.QueryRow("SELECT flex_token, query_id FROM ibkr_connections WHERE user_id = ?", userID).Scan(&token, &queryID)
+	if err != nil {
+		return "", "", errors.New("IBKR ще не налаштовано для цього користувача")
+	}
+	return token, queryID, nil
+}
+
+func (s *Storage) SaveIBKRSyncSuccess(userID string, accountID string, cash float64, positions []services.IBKRPosition) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`
+		UPDATE ibkr_connections
+		SET last_sync_at = CURRENT_TIMESTAMP,
+		    sync_status = 'success',
+		    error_message = '',
+		    account_id = ?
+		WHERE user_id = ?
+	`, accountID, userID)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec("INSERT INTO ibkr_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?", cashKey(userID), cash, cash)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec("DELETE FROM ibkr_positions WHERE user_id = ?", userID)
+	if err != nil {
+		return err
+	}
+
+	for _, p := range positions {
+		_, err = tx.Exec(`
+			INSERT INTO ibkr_positions (user_id, ticker, company_name, asset_class, shares, average_buy_price, current_price, total_value, currency, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`, userID, p.Ticker, p.CompanyName, p.AssetClass, p.Shares, p.AverageBuyPrice, p.CurrentPrice, p.TotalValue, p.Currency)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *Storage) SaveIBKRSyncFailure(userID string, syncErr error) {
+	if syncErr == nil {
+		return
+	}
+	_, _ = s.DB.Exec(`
+		UPDATE ibkr_connections
+		SET sync_status = 'error',
+		    error_message = ?
+		WHERE user_id = ?
+	`, syncErr.Error(), userID)
+}
+

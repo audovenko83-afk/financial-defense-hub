@@ -43,6 +43,16 @@ func main() {
 	mux.HandleFunc("/api/strategy/invest-plan", handlers.InvestPlanHandler)
 	mux.HandleFunc("/api/market/quote", handlers.MarketQuoteHandler)
 	mux.HandleFunc("/api/market/history", handlers.MarketHistoryHandler)
+	mux.HandleFunc("/api/portfolio/mode", handlers.PortfolioModeHandler)
+	mux.HandleFunc("/api/ibkr/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handlers.SaveIBKRConfigHandler(w, r)
+		} else {
+			handlers.GetIBKRConfigHandler(w, r)
+		}
+	})
+	mux.HandleFunc("/api/ibkr/sync", handlers.SyncIBKRHandler)
+	mux.HandleFunc("/api/admin/users", handlers.AdminStatsHandler)
 	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
