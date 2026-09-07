@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:google_sign_in/google_sign_in.dart';
+
 import '../core/constants.dart';
 import '../models/models.dart';
 import '../widgets/stock_logo.dart';
@@ -51,6 +53,10 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   }
 
   Future<void> _logout() async {
+    try {
+      final googleSignIn = GoogleSignIn();
+      await googleSignIn.signOut();
+    } catch (_) {}
     await SessionStore.deleteToken();
     if (!mounted) return;
     Navigator.pushNamedAndRemoveUntil(context, '/auth', (_) => false);

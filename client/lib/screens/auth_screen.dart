@@ -161,6 +161,9 @@ class _AuthScreenState extends State<AuthScreen> {
     });
     try {
       final GoogleSignIn googleSignIn = GoogleSignIn(scopes: ['email']);
+      try {
+        await googleSignIn.signOut();
+      } catch (_) {}
       final GoogleSignInAccount? account = await googleSignIn.signIn();
       if (account == null) {
         if (mounted) setState(() => isLoading = false);
