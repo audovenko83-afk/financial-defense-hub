@@ -32,7 +32,7 @@ type FlexQueryResponse struct {
 }
 
 type FlexStatementsTag struct {
-	FlexStatement FlexStatementData `xml:"FlexStatement"`
+	FlexStatements []FlexStatementData `xml:"FlexStatement"`
 }
 
 type FlexStatementData struct {
@@ -170,50 +170,65 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 		return report, nil
 	}
 
-	sendURL := fmt.Sprintf(IBKRSendRequestURL, token, queryID)
-	req, err := http.NewRequest(http.MethodGet, sendURL, nil)
-	if err != nil {
-		return nil, &IBKRExchangeError{
-			ErrorCode:       "REQ_BUILD_ERROR",
-			ErrorMessage:    err.Error(),
-			FriendlyMessage: "Помилка формування системного запиту до IBKR",
-			DurationMs:      time.Since(start).Milliseconds(),
-		}
+	baseURLs := []string{
+		"https://ndcdp.interactivebrokers.com",
+		"https://gdcdp.interactivebrokers.com",
+		"https://www.interactivebrokers.com",
+		"https://www.interactivebrokers.co.uk",
 	}
-	req.Header.Set("User-Agent", "MillionDollarWay/1.0 (FinanceApp)")
-
-	res, err := s.httpClient.Do(req)
-	if err != nil {
-		return nil, &IBKRExchangeError{
-			ErrorCode:       "NETWORK_ERROR",
-			ErrorMessage:    err.Error(),
-			FriendlyMessage: "Не вдалося з'єднатися з серверами Interactive Brokers. Перевірте інтернет-з'єднання.",
-			DurationMs:      time.Since(start).Milliseconds(),
-		}
-	}
-	defer res.Body.Close()
-
-	bodyBytes, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, &IBKRExchangeError{
-			ErrorCode:       "READ_BODY_ERROR",
-			ErrorMessage:    err.Error(),
-			FriendlyMessage: "Не вдалося прочитати відповідь від сервера IBKR",
-			HTTPStatus:      res.StatusCode,
-			DurationMs:      time.Since(start).Milliseconds(),
-		}
-	}
-
-	rawInitialXML := string(bodyBytes)
 
 	var initResp FlexStatementResponse
-	if err := xml.Unmarshal(bodyBytes, &initResp); err != nil {
+	var rawInitialXML string
+	var successBaseURL string
+	var lastHTTPStatus int
+
+	for _, baseURL := range baseURLs {
+		sendURL := fmt.Sprintf("%s/Universal/servlet/FlexStatementService.SendRequest?t=%s&q=%s&v=3", baseURL, token, queryID)
+		req, err := http.NewRequest(http.MethodGet, sendURL, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "MillionDollarWay/1.0 (FinanceApp)")
+
+		res, err := s.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+
+		bodyBytes, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		lastHTTPStatus = res.StatusCode
+		if res.StatusCode == 404 || res.StatusCode >= 500 {
+			continue
+		}
+
+		rawInitialXML = string(bodyBytes)
+		if err := xml.Unmarshal(bodyBytes, &initResp); err == nil && (initResp.Status == "Success" || initResp.ErrorCode != "") {
+			successBaseURL = baseURL
+			break
+		}
+	}
+
+	if successBaseURL == "" {
+		if rawInitialXML != "" {
+			return nil, &IBKRExchangeError{
+				ErrorCode:       "XML_PARSE_ERROR",
+				ErrorMessage:    "IBKR returned invalid XML or error page",
+				FriendlyMessage: "IBKR надіслав некоректну відповідь або сторінку помилки замість XML",
+				RawDetails:      rawInitialXML,
+				HTTPStatus:      lastHTTPStatus,
+				DurationMs:      time.Since(start).Milliseconds(),
+			}
+		}
 		return nil, &IBKRExchangeError{
-			ErrorCode:       "XML_PARSE_ERROR",
-			ErrorMessage:    err.Error(),
-			FriendlyMessage: "IBKR надіслав некоректну відповідь або сторінку помилки замість XML",
-			RawDetails:      rawInitialXML,
-			HTTPStatus:      res.StatusCode,
+			ErrorCode:       "NETWORK_ERROR",
+			ErrorMessage:    "All IBKR base URLs failed or returned 404",
+			FriendlyMessage: "Не вдалося з'єднатися з серверами Interactive Brokers. Перевірте інтернет-з'єднання.",
+			HTTPStatus:      lastHTTPStatus,
 			DurationMs:      time.Since(start).Milliseconds(),
 		}
 	}
@@ -229,7 +244,7 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 			ErrorMessage:    errMsg,
 			FriendlyMessage: friendly,
 			RawDetails:      rawInitialXML,
-			HTTPStatus:      res.StatusCode,
+			HTTPStatus:      lastHTTPStatus,
 			DurationMs:      time.Since(start).Milliseconds(),
 		}
 	}
@@ -246,11 +261,20 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 	}
 
 	var reportData *IBKRReportData
-	maxAttempts := 4
+	maxAttempts := 10
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		time.Sleep(time.Duration(attempt) * 1500 * time.Millisecond)
+		time.Sleep(time.Duration(attempt) * 2000 * time.Millisecond)
 
-		getURL := fmt.Sprintf(IBKRGetStatementURL, refCode, token)
+		getURL := initResp.Url
+		if getURL == "" {
+			getURL = successBaseURL + "/Universal/servlet/FlexStatementService.GetStatement"
+		}
+		if !strings.Contains(getURL, "?") {
+			getURL += fmt.Sprintf("?q=%s&t=%s&v=3", refCode, token)
+		} else if !strings.Contains(getURL, "q=") {
+			getURL += fmt.Sprintf("&q=%s&t=%s&v=3", refCode, token)
+		}
+
 		getReq, _ := http.NewRequest(http.MethodGet, getURL, nil)
 		getReq.Header.Set("User-Agent", "MillionDollarWay/1.0 (FinanceApp)")
 
@@ -287,7 +311,7 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 			continue
 		}
 
-		reportData = parseFlexStatement(&queryResp.FlexStatements.FlexStatement)
+		reportData = parseFlexStatements(queryResp.FlexStatements.FlexStatements)
 		reportData.RawDetails = fmt.Sprintf("Query: %s, Account: %s, Positions: %d, Cash: $%.2f",
 			queryResp.QueryName, reportData.AccountID, len(reportData.Positions), reportData.Cash)
 		break
@@ -297,7 +321,7 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 		return nil, &IBKRExchangeError{
 			ErrorCode:       "TIMEOUT_WAITING_STATEMENT",
 			ErrorMessage:    "Statement generation timed out",
-			FriendlyMessage: "IBKR ще не завершив формування звіту. Зазвичай це займає 1–2 хвилини, спробуйте синхронізацію трохи згодом.",
+			FriendlyMessage: "IBKR ще не завершив формування звіту. Зазвичай це займає 1–3 хвилини (особливо за великий період), спробуйте синхронізацію трохи згодом.",
 			DurationMs:      time.Since(start).Milliseconds(),
 		}
 	}
@@ -311,72 +335,93 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 	return reportData, nil
 }
 
-func parseFlexStatement(stmt *FlexStatementData) *IBKRReportData {
+func parseFlexStatements(stmts []FlexStatementData) *IBKRReportData {
 	data := &IBKRReportData{
-		AccountID: stmt.AccountId,
 		SyncAt:    time.Now().UTC(),
 		Positions: make([]IBKRPosition, 0),
 	}
 
-	if len(stmt.CashReport) > 0 {
-		for _, cr := range stmt.CashReport {
-			if cr.Currency == "BASE_SUMMARY" || cr.Currency == "USD" || cr.EndingCash > 0 {
-				data.Cash = cr.EndingCash
-				break
+	var accIDs []string
+	var totalCash float64
+
+	for _, stmt := range stmts {
+		accIDs = append(accIDs, stmt.AccountId)
+
+		var stmtCash float64
+		if len(stmt.CashReport) > 0 {
+			for _, cr := range stmt.CashReport {
+				if cr.Currency == "BASE_SUMMARY" || cr.Currency == "USD" || cr.EndingCash > 0 {
+					stmtCash = cr.EndingCash
+					break
+				}
 			}
 		}
+		if stmtCash == 0 && len(stmt.EquitySummary) > 0 {
+			stmtCash = stmt.EquitySummary[0].Cash
+		}
+		totalCash += stmtCash
+
+		for _, p := range stmt.OpenPositions {
+			if p.Position <= 0 {
+				continue
+			}
+			assetClass := "Stock"
+			if strings.EqualFold(p.AssetCategory, "ETF") {
+				assetClass = "ETF"
+			} else if strings.EqualFold(p.AssetCategory, "BOND") {
+				assetClass = "Bond"
+			}
+
+			name := p.Description
+			if name == "" {
+				name = p.Symbol
+			}
+
+			avgPrice := p.CostBasisPrice
+			if avgPrice <= 0 && p.Position > 0 && p.PositionValue > 0 {
+				avgPrice = p.PositionValue / p.Position
+			}
+
+			curPrice := p.MarkPrice
+			if curPrice <= 0 && p.Position > 0 {
+				curPrice = avgPrice
+			}
+
+			val := p.PositionValue
+			if val <= 0 {
+				val = p.Position * curPrice
+			}
+
+			curr := p.Currency
+			if curr == "" {
+				curr = "USD"
+			}
+
+			data.Positions = append(data.Positions, IBKRPosition{
+				Ticker:          strings.ToUpper(p.Symbol),
+				CompanyName:     name,
+				AssetClass:      assetClass,
+				Shares:          p.Position,
+				AverageBuyPrice: avgPrice,
+				CurrentPrice:    curPrice,
+				TotalValue:      val,
+				Currency:        curr,
+			})
+		}
 	}
-	if data.Cash == 0 && len(stmt.EquitySummary) > 0 {
-		data.Cash = stmt.EquitySummary[0].Cash
+
+	if len(accIDs) > 0 {
+		uniqueAccs := make(map[string]bool)
+		var finalAccs []string
+		for _, a := range accIDs {
+			if !uniqueAccs[a] && a != "" {
+				uniqueAccs[a] = true
+				finalAccs = append(finalAccs, a)
+			}
+		}
+		data.AccountID = strings.Join(finalAccs, ", ")
 	}
-
-	for _, p := range stmt.OpenPositions {
-		if p.Position <= 0 {
-			continue
-		}
-		assetClass := "Stock"
-		if strings.EqualFold(p.AssetCategory, "ETF") {
-			assetClass = "ETF"
-		} else if strings.EqualFold(p.AssetCategory, "BOND") {
-			assetClass = "Bond"
-		}
-
-		name := p.Description
-		if name == "" {
-			name = p.Symbol
-		}
-
-		avgPrice := p.CostBasisPrice
-		if avgPrice <= 0 && p.Position > 0 && p.PositionValue > 0 {
-			avgPrice = p.PositionValue / p.Position
-		}
-
-		curPrice := p.MarkPrice
-		if curPrice <= 0 && p.Position > 0 {
-			curPrice = avgPrice
-		}
-
-		val := p.PositionValue
-		if val <= 0 {
-			val = p.Position * curPrice
-		}
-
-		curr := p.Currency
-		if curr == "" {
-			curr = "USD"
-		}
-
-		data.Positions = append(data.Positions, IBKRPosition{
-			Ticker:          strings.ToUpper(p.Symbol),
-			CompanyName:     name,
-			AssetClass:      assetClass,
-			Shares:          p.Position,
-			AverageBuyPrice: avgPrice,
-			CurrentPrice:    curPrice,
-			TotalValue:      val,
-			Currency:        curr,
-		})
-	}
+	data.Cash = totalCash
 
 	return data
 }
