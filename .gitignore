@@ -30,6 +30,7 @@ client/android/key.properties
 
 # Store final assets (large binaries)
 store_assets/*.aab
+store_assets/mapping.txt
 
 # OS files
 .DS_Store
