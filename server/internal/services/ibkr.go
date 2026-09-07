@@ -12,8 +12,8 @@ import (
 
 // IBKR Flex Statement Web Service URLs
 const (
-	IBKRSendRequestURL  = "https://gdcdp.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest?t=%s&q=%s&v=3"
-	IBKRGetStatementURL = "https://gdcdp.interactivebrokers.com/Universal/servlet/FlexStatementService.GetStatement?q=%s&t=%s&v=3"
+	IBKRSendRequestURL  = "https://ndcdyn.interactivebrokers.com/Universal/servlet/FlexStatementService.SendRequest?t=%s&q=%s&v=3"
+	IBKRGetStatementURL = "https://ndcdyn.interactivebrokers.com/Universal/servlet/FlexStatementService.GetStatement?q=%s&t=%s&v=3"
 )
 
 type FlexStatementResponse struct {
@@ -108,7 +108,7 @@ func (e *IBKRExchangeError) Error() string {
 func FriendlyIBKRExplanation(code, rawMsg string) string {
 	switch strings.TrimSpace(code) {
 	case "1001":
-		return "Запит містить невірні або порожні параметри."
+		return "Сервери IBKR зараз формують звіт або діє інтервал повторних запитів (Rate Limit). Зачекайте кілька хвилин та спробуйте знову."
 	case "1003":
 		return "Служба Flex Web Service IBKR тимчасово недоступна. Будь ласка, спробуйте пізніше."
 	case "1004":
@@ -133,6 +133,8 @@ func FriendlyIBKRExplanation(code, rawMsg string) string {
 		return "Звіт поставлено в чергу на генерацію в IBKR. Зачекайте 1–2 хвилини та оновіть."
 	case "1021":
 		return "Службу Flex Web Service не увімкнено. Активуйте перемикач Flex Web Service у кабінеті IBKR (Performance & Reports -> Flex Queries)."
+	case "1025":
+		return "Забагато частих запитів до IBKR. IBKR тимчасово призупинив запити для захисту від перевантаження (Rate Limit). Будь ласка, зачекайте 5–10 хвилин і спробуйте знову."
 	default:
 		if strings.Contains(strings.ToLower(rawMsg), "token") {
 			return "Помилка токена IBKR: " + rawMsg + ". Перевірте токен у кабінеті IBKR."
@@ -171,8 +173,7 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 	}
 
 	baseURLs := []string{
-		"https://ndcdp.interactivebrokers.com",
-		"https://gdcdp.interactivebrokers.com",
+		"https://ndcdyn.interactivebrokers.com",
 		"https://www.interactivebrokers.com",
 		"https://www.interactivebrokers.co.uk",
 	}
@@ -230,6 +231,24 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 			FriendlyMessage: "Не вдалося з'єднатися з серверами Interactive Brokers. Перевірте інтернет-з'єднання.",
 			HTTPStatus:      lastHTTPStatus,
 			DurationMs:      time.Since(start).Milliseconds(),
+		}
+	}
+
+	if initResp.ErrorCode == "1001" {
+		time.Sleep(3 * time.Second)
+		sendURL := fmt.Sprintf("%s/Universal/servlet/FlexStatementService.SendRequest?t=%s&q=%s&v=3", successBaseURL, token, queryID)
+		if req, err := http.NewRequest(http.MethodGet, sendURL, nil); err == nil {
+			req.Header.Set("User-Agent", "MillionDollarWay/1.0 (FinanceApp)")
+			if res, err := s.httpClient.Do(req); err == nil {
+				if bodyBytes, err := io.ReadAll(res.Body); err == nil {
+					var retryResp FlexStatementResponse
+					if err := xml.Unmarshal(bodyBytes, &retryResp); err == nil && (retryResp.Status == "Success" || retryResp.ErrorCode != "") {
+						initResp = retryResp
+						rawInitialXML = string(bodyBytes)
+					}
+				}
+				res.Body.Close()
+			}
 		}
 	}
 
