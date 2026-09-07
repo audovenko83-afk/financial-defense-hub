@@ -97,11 +97,29 @@ type IBKRConnectionInfo struct {
 	Configured   bool   `json:"configured"`
 	QueryID      string `json:"query_id"`
 	TokenMasked  string `json:"token_masked"`
+	Token        string `json:"token,omitempty"`
 	LastSyncAt   string `json:"last_sync_at"`
 	SyncStatus   string `json:"sync_status"`
 	ErrorMessage string `json:"error_message"`
 	AccountID    string `json:"account_id"`
 	Mode         string `json:"mode"`
+}
+
+type AuditLog struct {
+	ID          int64  `json:"id"`
+	UserID      string `json:"user_id"`
+	UserEmail   string `json:"user_email"`
+	EventType   string `json:"event_type"`
+	Status      string `json:"status"`
+	AccountID   string `json:"account_id"`
+	QueryID     string `json:"query_id"`
+	TokenMasked string `json:"token_masked"`
+	ErrorCode   string `json:"error_code"`
+	Message     string `json:"message"`
+	Details     string `json:"details"`
+	DurationMs  int64  `json:"duration_ms"`
+	IPAddress   string `json:"ip_address"`
+	CreatedAt   string `json:"created_at"`
 }
 
 func round2(v float64) float64 {
@@ -207,6 +225,23 @@ func NewStorage(dbPath string) (*Storage, error) {
 		key TEXT PRIMARY KEY,
 		value REAL
 	);
+	CREATE TABLE IF NOT EXISTS system_audit_logs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id TEXT NOT NULL,
+		user_email TEXT DEFAULT '',
+		event_type TEXT NOT NULL,
+		status TEXT NOT NULL,
+		account_id TEXT DEFAULT '',
+		query_id TEXT DEFAULT '',
+		token_masked TEXT DEFAULT '',
+		error_code TEXT DEFAULT '',
+		message TEXT DEFAULT '',
+		details TEXT DEFAULT '',
+		duration_ms INTEGER DEFAULT 0,
+		ip_address TEXT DEFAULT '',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_audit_created ON system_audit_logs(created_at DESC);
 	`
 	if _, err := db.Exec(createBaseTables); err != nil {
 		return nil, err
@@ -966,6 +1001,7 @@ func (s *Storage) GetIBKRConnection(userID string) (IBKRConnectionInfo, error) {
 	if err == nil && queryID != "" {
 		info.Configured = true
 		info.QueryID = queryID
+		info.Token = token
 		info.LastSyncAt = lastSync
 		info.SyncStatus = status
 		info.ErrorMessage = errStr
@@ -980,11 +1016,20 @@ func (s *Storage) GetIBKRConnection(userID string) (IBKRConnectionInfo, error) {
 	return info, nil
 }
 
-func (s *Storage) SaveIBKRConnection(userID, token, queryID string) error {
+func (s *Storage) SaveIBKRConnection(userID, token, queryID string) (string, error) {
 	token = strings.TrimSpace(token)
 	queryID = strings.TrimSpace(queryID)
-	if token == "" || queryID == "" {
-		return errors.New("токен та Query ID не можуть бути порожніми")
+	if queryID == "" {
+		return "", errors.New("Query ID не може бути порожнім")
+	}
+	if token == "" || strings.Contains(token, "*") {
+		var existingToken string
+		_ = s.DB.QueryRow("SELECT flex_token FROM ibkr_connections WHERE user_id = ?", userID).Scan(&existingToken)
+		if existingToken != "" {
+			token = existingToken
+		} else {
+			return "", errors.New("Flex Token не може бути порожнім")
+		}
 	}
 	_, err := s.DB.Exec(`
 		INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
@@ -994,7 +1039,7 @@ func (s *Storage) SaveIBKRConnection(userID, token, queryID string) error {
 			query_id = excluded.query_id,
 			updated_at = CURRENT_TIMESTAMP
 	`, userID, token, queryID)
-	return err
+	return token, err
 }
 
 func (s *Storage) GetIBKRCredentials(userID string) (string, string, error) {
@@ -1059,4 +1104,63 @@ func (s *Storage) SaveIBKRSyncFailure(userID string, syncErr error) {
 		WHERE user_id = ?
 	`, syncErr.Error(), userID)
 }
+
+func (s *Storage) AddAuditLog(log AuditLog) error {
+	if log.UserEmail == "" && log.UserID != "" {
+		log.UserEmail, _ = s.GetUserEmail(log.UserID)
+	}
+	_, err := s.DB.Exec(`
+		INSERT INTO system_audit_logs (
+			user_id, user_email, event_type, status, account_id, query_id,
+			token_masked, error_code, message, details, duration_ms, ip_address, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, log.UserID, log.UserEmail, log.EventType, log.Status, log.AccountID, log.QueryID,
+		log.TokenMasked, log.ErrorCode, log.Message, log.Details, log.DurationMs, log.IPAddress)
+	return err
+}
+
+func (s *Storage) GetAuditLogs(limit int, statusFilter string) ([]AuditLog, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	query := `
+		SELECT id, user_id, COALESCE(user_email, ''), event_type, status,
+		       COALESCE(account_id, ''), COALESCE(query_id, ''), COALESCE(token_masked, ''),
+		       COALESCE(error_code, ''), COALESCE(message, ''), COALESCE(details, ''),
+		       COALESCE(duration_ms, 0), COALESCE(ip_address, ''), COALESCE(created_at, '')
+		FROM system_audit_logs
+	`
+	var args []any
+	if statusFilter != "" && statusFilter != "ALL" {
+		query += " WHERE status = ?"
+		args = append(args, statusFilter)
+	}
+	query += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.DB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []AuditLog
+	for rows.Next() {
+		var l AuditLog
+		if err := rows.Scan(
+			&l.ID, &l.UserID, &l.UserEmail, &l.EventType, &l.Status,
+			&l.AccountID, &l.QueryID, &l.TokenMasked,
+			&l.ErrorCode, &l.Message, &l.Details,
+			&l.DurationMs, &l.IPAddress, &l.CreatedAt,
+		); err != nil {
+			continue
+		}
+		logs = append(logs, l)
+	}
+	if logs == nil {
+		logs = []AuditLog{}
+	}
+	return logs, nil
+}
+
 

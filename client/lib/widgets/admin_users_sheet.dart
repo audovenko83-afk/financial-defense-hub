@@ -23,15 +23,22 @@ class AdminUsersSheet extends StatefulWidget {
 }
 
 class _AdminUsersSheetState extends State<AdminUsersSheet> {
+  int _selectedTab = 0; // 0: Users, 1: IBKR Audit Logs
   AdminStats? _stats;
   bool _isLoading = true;
   String? _error;
   String _searchQuery = '';
 
+  List<AdminAuditLog>? _auditLogs;
+  bool _isLoadingLogs = false;
+  String? _logsError;
+  String _statusFilter = 'ALL';
+
   @override
   void initState() {
     super.initState();
     _fetchUsers();
+    _fetchAuditLogs();
   }
 
   Future<void> _fetchUsers() async {
@@ -47,21 +54,67 @@ class _AdminUsersSheetState extends State<AdminUsersSheet> {
 
       if (res.statusCode == 200) {
         final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-        setState(() {
-          _stats = AdminStats.fromJson(data);
-          _isLoading = false;
-        });
+        if (mounted) {
+          setState(() {
+            _stats = AdminStats.fromJson(data);
+            _isLoading = false;
+          });
+        }
       } else {
+        if (mounted) {
+          setState(() {
+            _error = 'Помилка доступу (${res.statusCode}): ${res.body}';
+            _isLoading = false;
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
         setState(() {
-          _error = 'Помилка доступу (${res.statusCode}): ${res.body}';
+          _error = 'Не вдалося завантажити дані: $e';
           _isLoading = false;
         });
       }
+    }
+  }
+
+  Future<void> _fetchAuditLogs() async {
+    setState(() {
+      _isLoadingLogs = true;
+      _logsError = null;
+    });
+    try {
+      final uri = Uri.parse('${ApiConfig.baseUrl}/admin/audit-logs?status=$_statusFilter');
+      final res = await http.get(
+        uri,
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      ).timeout(const Duration(seconds: 8));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+        final rawList = data['logs'] as List? ?? [];
+        final logs = rawList.map((l) => AdminAuditLog.fromJson(l as Map<String, dynamic>)).toList();
+        if (mounted) {
+          setState(() {
+            _auditLogs = logs;
+            _isLoadingLogs = false;
+          });
+        }
+      } else {
+        if (mounted) {
+          setState(() {
+            _logsError = 'Помилка отримання журналу: ${res.statusCode}';
+            _isLoadingLogs = false;
+          });
+        }
+      }
     } catch (e) {
-      setState(() {
-        _error = 'Не вдалося завантажити дані: $e';
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _logsError = 'Не вдалося завантажити журнал: $e';
+          _isLoadingLogs = false;
+        });
+      }
     }
   }
 
@@ -107,11 +160,11 @@ class _AdminUsersSheetState extends State<AdminUsersSheet> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Статистика користувачів',
+                      'Адміністративна панель',
                       style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: Color(0xFFFFD700)),
                     ),
                     Text(
-                      'Активність та реєстрації в системі',
+                      'Користувачі та системний журнал IBKR',
                       style: TextStyle(color: Colors.white54, fontSize: 11),
                     ),
                   ],
@@ -119,7 +172,13 @@ class _AdminUsersSheetState extends State<AdminUsersSheet> {
               ),
               IconButton(
                 icon: const Icon(Icons.refresh_rounded, color: Colors.white70),
-                onPressed: _fetchUsers,
+                onPressed: () {
+                  if (_selectedTab == 0) {
+                    _fetchUsers();
+                  } else {
+                    _fetchAuditLogs();
+                  }
+                },
               ),
               IconButton(
                 icon: const Icon(Icons.close_rounded, color: Colors.white54),
@@ -127,7 +186,62 @@ class _AdminUsersSheetState extends State<AdminUsersSheet> {
               ),
             ],
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
+          Container(
+            height: 38,
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1F2C),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: () => setState(() => _selectedTab = 0),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: _selectedTab == 0 ? const Color(0xFFFFD700) : Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '👥 Користувачі',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: _selectedTab == 0 ? Colors.black : Colors.white70,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: InkWell(
+                    onTap: () => setState(() => _selectedTab = 1),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: _selectedTab == 1 ? const Color(0xFFFFD700) : Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '📜 Журнал IBKR',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: _selectedTab == 1 ? Colors.black : Colors.white70,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (_selectedTab == 0) ...[
           if (_isLoading) ...[
             const Expanded(
               child: Center(child: CircularProgressIndicator(color: Color(0xFFFFD700))),
@@ -182,16 +296,192 @@ class _AdminUsersSheetState extends State<AdminUsersSheet> {
                       onRefresh: _fetchUsers,
                       child: ListView.separated(
                         itemCount: filteredUsers.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                        separatorBuilder: (context, index) => const SizedBox(height: 8),
                         itemBuilder: (context, i) => _buildUserCard(filteredUsers[i]),
                       ),
                     ),
+            ),
+          ],
+        ] else ...[
+          _buildAuditLogsView(),
+        ],
+        ],
+      ),
+    );
+  }
+  Widget _buildAuditLogsView() {
+    if (_isLoadingLogs) {
+      return const Expanded(
+        child: Center(child: CircularProgressIndicator(color: Color(0xFFFFD700))),
+      );
+    }
+    if (_logsError != null) {
+      return Expanded(
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 36),
+              const SizedBox(height: 10),
+              Text(_logsError!, style: const TextStyle(color: Colors.redAccent, fontSize: 13)),
+              const SizedBox(height: 12),
+              ElevatedButton(onPressed: _fetchAuditLogs, child: const Text('Спробувати знову')),
+            ],
+          ),
+        ),
+      );
+    }
+    final logs = _auditLogs ?? [];
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _buildFilterChip('Усі події', 'ALL'),
+                const SizedBox(width: 6),
+                _buildFilterChip('⚠️ Помилки', 'ERROR'),
+                const SizedBox(width: 6),
+                _buildFilterChip('🟢 Успішні', 'SUCCESS'),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Expanded(
+            child: logs.isEmpty
+                ? const Center(child: Text('Записів у журналі немає', style: TextStyle(color: Colors.white38)))
+                : RefreshIndicator(
+                    color: const Color(0xFFFFD700),
+                    onRefresh: _fetchAuditLogs,
+                    child: ListView.separated(
+                      itemCount: logs.length,
+                      separatorBuilder: (context, index) => const SizedBox(height: 8),
+                      itemBuilder: (context, i) => _buildAuditLogCard(logs[i]),
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFilterChip(String label, String value) {
+    final isSelected = _statusFilter == value;
+    return ChoiceChip(
+      label: Text(label, style: TextStyle(fontSize: 11, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, color: isSelected ? Colors.black : Colors.white70)),
+      selected: isSelected,
+      selectedColor: const Color(0xFFFFD700),
+      backgroundColor: const Color(0xFF1A1F2C),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      onSelected: (_) {
+        setState(() => _statusFilter = value);
+        _fetchAuditLogs();
+      },
+    );
+  }
+
+  Widget _buildAuditLogCard(AdminAuditLog log) {
+    final isSuccess = log.status == 'SUCCESS';
+    final isError = log.status == 'ERROR';
+    final statusColor = isSuccess ? const Color(0xFF00FF94) : (isError ? Colors.redAccent : const Color(0xFFFFB74D));
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1F2C),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: statusColor.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  log.status,
+                  style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.w900),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  log.eventType,
+                  style: const TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.bold),
+                ),
+              ),
+              const Spacer(),
+              Text(
+                log.friendlyCreatedAt,
+                style: const TextStyle(color: Colors.white38, fontSize: 10),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              const Icon(Icons.email_outlined, size: 13, color: Colors.white54),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  log.userEmail.isNotEmpty ? log.userEmail : log.userId,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (log.durationMs > 0)
+                Text('${log.durationMs} мс', style: const TextStyle(color: Colors.white38, fontSize: 10)),
+            ],
+          ),
+          if (log.message.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(log.message, style: const TextStyle(color: Colors.white70, fontSize: 11)),
+          ],
+          if (log.errorCode.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text('Код помилки: ${log.errorCode}', style: const TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+          ],
+          if (log.queryId.isNotEmpty || log.accountId.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Query: ${log.queryId.isNotEmpty ? log.queryId : "—"} • Рахунок: ${log.accountId.isNotEmpty ? log.accountId : "—"} • Токен: ${log.tokenMasked.isNotEmpty ? log.tokenMasked : "—"}',
+              style: const TextStyle(color: Colors.white38, fontSize: 10),
+            ),
+          ],
+          if (log.details.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(6),
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.3),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                log.details,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white54, fontSize: 9, fontFamily: 'monospace'),
+              ),
             ),
           ],
         ],
       ),
     );
   }
+
 
   Widget _buildStatPill(String title, String value, IconData icon, Color color) {
     return Expanded(

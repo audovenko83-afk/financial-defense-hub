@@ -1,10 +1,13 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../core/constants.dart';
 import '../models/models.dart';
 import '../widgets/admin_users_sheet.dart';
+import '../widgets/ibkr_connection_result_dialog.dart';
 
 class SettingsSheet extends StatefulWidget {
   final String token;
@@ -103,6 +106,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
         Uri.parse('${ApiConfig.baseUrl}/ibkr/config'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
+      final prefs = await SharedPreferences.getInstance();
+      final localSavedToken = prefs.getString('ibkr_saved_token') ?? '';
+
       if (res.statusCode == 200) {
         final data = jsonDecode(utf8.decode(res.bodyBytes));
         final cfg = IBKRConfig.fromJson(data);
@@ -112,7 +118,17 @@ class _SettingsSheetState extends State<SettingsSheet> {
             if (cfg.queryId.isNotEmpty && _queryIdCtrl.text.isEmpty) {
               _queryIdCtrl.text = cfg.queryId;
             }
+            if (cfg.token.isNotEmpty) {
+              _flexTokenCtrl.text = cfg.token;
+              prefs.setString('ibkr_saved_token', cfg.token);
+            } else if (localSavedToken.isNotEmpty && _flexTokenCtrl.text.isEmpty) {
+              _flexTokenCtrl.text = localSavedToken;
+            }
           });
+        }
+      } else if (localSavedToken.isNotEmpty && _flexTokenCtrl.text.isEmpty) {
+        if (mounted) {
+          setState(() => _flexTokenCtrl.text = localSavedToken);
         }
       }
     } catch (_) {}
@@ -143,6 +159,59 @@ class _SettingsSheetState extends State<SettingsSheet> {
     if (targetMode == _portfolioMode) return;
 
     final bool isGoingToReal = targetMode == 'real';
+
+    if (isGoingToReal && (_ibkrConfig?.configured != true)) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF161B26),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: const Row(
+            children: [
+              Icon(Icons.hub_rounded, color: Color(0xFF00E5FF)),
+              SizedBox(width: 8),
+              Expanded(child: Text('Підключення до IBKR', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+            ],
+          ),
+          content: const Text(
+            'Рахунок Interactive Brokers ще не налаштовано!\n\n'
+            'Щоб бачити дані реального рахунку, ви можете ввести числовий токен Flex Query, або скористатися миттєвим тестовим демо-підключенням з живими біржовими котируваннями.',
+            style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('Скасувати', style: TextStyle(color: Colors.white54)),
+            ),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF00E5FF)),
+              icon: const Icon(Icons.key_rounded, size: 16),
+              label: const Text('Ввести токен'),
+              onPressed: () => Navigator.pop(ctx, 'input'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF00FF94), foregroundColor: Colors.black),
+              icon: const Icon(Icons.play_circle_outline_rounded, size: 16),
+              label: const Text('Швидкий тест IBKR', style: TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: () => Navigator.pop(ctx, 'demo'),
+            ),
+          ],
+        ),
+      );
+
+      if (choice == 'demo') {
+        _fillDemoIBKR();
+        // after demo fills, switch mode
+        targetMode = 'real';
+      } else if (choice == 'input') {
+        // focus or stay on IBKR settings
+        return;
+      } else {
+        return;
+      }
+    }
+
+    if (!mounted) return;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -210,7 +279,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
       if (res.statusCode == 200) {
         setState(() => _portfolioMode = targetMode);
         widget.onPortfolioUpdated?.call();
-        if (mounted) {
+        if (isGoingToReal && (_ibkrConfig?.configured == true)) {
+          _syncIBKRNow();
+        } else if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               backgroundColor: isGoingToReal ? const Color(0xFF00FF94) : const Color(0xFF00E5FF),
@@ -237,15 +308,26 @@ class _SettingsSheetState extends State<SettingsSheet> {
   Future<void> _saveIBKRConfig() async {
     final token = _flexTokenCtrl.text.trim();
     final queryId = _queryIdCtrl.text.trim();
-    if (token.isEmpty || queryId.isEmpty) {
+    if (queryId.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(backgroundColor: Colors.redAccent, content: Text('Введіть Flex Token та Query ID')),
+        const SnackBar(backgroundColor: Colors.redAccent, content: Text('Введіть цифровий Query ID звіту')),
+      );
+      return;
+    }
+    if (token.isEmpty && _ibkrConfig?.configured != true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(backgroundColor: Colors.redAccent, content: Text('Введіть числовий токен Flex Query')),
       );
       return;
     }
 
     setState(() => _isSavingIBKR = true);
     try {
+      final prefs = await SharedPreferences.getInstance();
+      if (token.isNotEmpty && !token.contains('*')) {
+        await prefs.setString('ibkr_saved_token', token);
+      }
+
       final res = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/ibkr/config'),
         headers: {
@@ -255,29 +337,39 @@ class _SettingsSheetState extends State<SettingsSheet> {
         body: jsonEncode({'flex_token': token, 'query_id': queryId}),
       );
       final body = jsonDecode(utf8.decode(res.bodyBytes));
-      if (res.statusCode == 200) {
-        _flexTokenCtrl.clear();
-        await _loadIBKRConfig();
-        widget.onPortfolioUpdated?.call();
-        if (mounted) {
-          final warning = body['warning'] as String?;
-          if (warning != null && warning.isNotEmpty) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(backgroundColor: const Color(0xFFFFB74D), content: Text(warning, style: const TextStyle(color: Colors.black))),
-            );
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(backgroundColor: Color(0xFF00FF94), content: Text('IBKR успішно підключено та синхронізовано!', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold))),
-            );
-          }
-        }
-      } else {
-        throw Exception(body);
+      final result = IBKRResult.fromJson(body);
+
+      await _loadIBKRConfig();
+      widget.onPortfolioUpdated?.call();
+
+      if (mounted) {
+        IBKRConnectionResultDialog.show(
+          context,
+          result: result,
+          isAdmin: SessionStore.isAdmin(_email),
+          onRetry: _saveIBKRConfig,
+          onOpenGuide: _showIBKRGuideDialog,
+          onTryDemo: _fillDemoIBKR,
+        );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(backgroundColor: Colors.redAccent, content: Text('Помилка збереження IBKR: $e')),
+        final errResult = IBKRResult(
+          isSuccess: false,
+          status: 'error',
+          accountId: _ibkrConfig?.accountId ?? '',
+          positionsCount: 0,
+          cash: 0,
+          friendlyMessage: 'Помилка збереження IBKR: ${e.toString().replaceAll("Exception: ", "")}',
+          errorMessage: e.toString(),
+        );
+        IBKRConnectionResultDialog.show(
+          context,
+          result: errResult,
+          isAdmin: SessionStore.isAdmin(_email),
+          onRetry: _saveIBKRConfig,
+          onOpenGuide: _showIBKRGuideDialog,
+          onTryDemo: _fillDemoIBKR,
         );
       }
     } finally {
@@ -293,27 +385,39 @@ class _SettingsSheetState extends State<SettingsSheet> {
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
       final body = jsonDecode(utf8.decode(res.bodyBytes));
-      if (res.statusCode == 200) {
-        await _loadIBKRConfig();
-        widget.onPortfolioUpdated?.call();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              backgroundColor: const Color(0xFF00FF94),
-              content: Text(
-                'Синхронізація успішна! Позицій: ${body['positions_count']} (Кеш: \$${body['cash']})',
-                style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-              ),
-            ),
-          );
-        }
-      } else {
-        throw Exception(body);
+      final result = IBKRResult.fromJson(body);
+
+      await _loadIBKRConfig();
+      widget.onPortfolioUpdated?.call();
+
+      if (mounted) {
+        IBKRConnectionResultDialog.show(
+          context,
+          result: result,
+          isAdmin: SessionStore.isAdmin(_email),
+          onRetry: _syncIBKRNow,
+          onOpenGuide: _showIBKRGuideDialog,
+          onTryDemo: _fillDemoIBKR,
+        );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(backgroundColor: Colors.redAccent, content: Text('Помилка синхронізації IBKR: $e')),
+        final errResult = IBKRResult(
+          isSuccess: false,
+          status: 'error',
+          accountId: _ibkrConfig?.accountId ?? '',
+          positionsCount: 0,
+          cash: 0,
+          friendlyMessage: 'Помилка синхронізації IBKR: ${e.toString().replaceAll("Exception: ", "")}',
+          errorMessage: e.toString(),
+        );
+        IBKRConnectionResultDialog.show(
+          context,
+          result: errResult,
+          isAdmin: SessionStore.isAdmin(_email),
+          onRetry: _syncIBKRNow,
+          onOpenGuide: _showIBKRGuideDialog,
+          onTryDemo: _fillDemoIBKR,
         );
       }
     } finally {
@@ -787,10 +891,14 @@ class _SettingsSheetState extends State<SettingsSheet> {
           TextField(
             controller: _flexTokenCtrl,
             obscureText: _obscureToken,
+            keyboardType: const TextInputType.numberWithOptions(signed: false, decimal: false),
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+            ],
             style: const TextStyle(fontSize: 13),
             decoration: InputDecoration(
-              labelText: isConfigured ? 'Flex Token (Задано: ${_ibkrConfig?.tokenMasked})' : 'Flex Query Token',
-              hintText: 'Введіть токен з IBKR',
+              labelText: isConfigured ? 'Flex Token (Збережено: ${_ibkrConfig?.tokenMasked})' : 'Flex Query Token (тільки цифри)',
+              hintText: 'Введіть числовий токен з IBKR',
               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
               suffixIcon: IconButton(
@@ -802,10 +910,13 @@ class _SettingsSheetState extends State<SettingsSheet> {
           const SizedBox(height: 8),
           TextField(
             controller: _queryIdCtrl,
-            keyboardType: TextInputType.number,
+            keyboardType: const TextInputType.numberWithOptions(signed: false, decimal: false),
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+            ],
             style: const TextStyle(fontSize: 13),
             decoration: InputDecoration(
-              labelText: 'Query ID звіту',
+              labelText: 'Query ID звіту (тільки цифри)',
               hintText: 'Напр. 987654',
               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),

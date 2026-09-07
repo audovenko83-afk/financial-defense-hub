@@ -213,6 +213,7 @@ class IBKRConfig {
   final bool configured;
   final String queryId;
   final String tokenMasked;
+  final String token;
   final String lastSyncAt;
   final String syncStatus;
   final String errorMessage;
@@ -223,6 +224,7 @@ class IBKRConfig {
     required this.configured,
     required this.queryId,
     required this.tokenMasked,
+    this.token = '',
     required this.lastSyncAt,
     required this.syncStatus,
     required this.errorMessage,
@@ -235,12 +237,126 @@ class IBKRConfig {
       configured: json['configured'] as bool? ?? false,
       queryId: json['query_id'] as String? ?? '',
       tokenMasked: json['token_masked'] as String? ?? '',
+      token: json['token'] as String? ?? '',
       lastSyncAt: json['last_sync_at'] as String? ?? '',
       syncStatus: json['sync_status'] as String? ?? '',
       errorMessage: json['error_message'] as String? ?? '',
       accountId: json['account_id'] as String? ?? '',
       mode: json['mode'] as String? ?? 'demo',
     );
+  }
+}
+
+class IBKRResult {
+  final bool isSuccess;
+  final String status;
+  final String accountId;
+  final int positionsCount;
+  final double cash;
+  final String friendlyMessage;
+  final String? warning;
+  final String? errorCode;
+  final String? errorMessage;
+  final String? rawDetails;
+  final int durationMs;
+  final bool isDemo;
+
+  IBKRResult({
+    required this.isSuccess,
+    required this.status,
+    required this.accountId,
+    required this.positionsCount,
+    required this.cash,
+    required this.friendlyMessage,
+    this.warning,
+    this.errorCode,
+    this.errorMessage,
+    this.rawDetails,
+    this.durationMs = 0,
+    this.isDemo = false,
+  });
+
+  factory IBKRResult.fromJson(Map<String, dynamic> json) {
+    final status = json['status'] as String? ?? '';
+    final isSuccess = status == 'ok' || status == 'success';
+    return IBKRResult(
+      isSuccess: isSuccess,
+      status: status,
+      accountId: json['account_id'] as String? ?? '',
+      positionsCount: json['positions_count'] as int? ?? 0,
+      cash: (json['cash'] as num?)?.toDouble() ?? 0.0,
+      friendlyMessage: json['friendly_message'] as String? ??
+          (isSuccess ? 'Підключено успішно!' : (json['error_message'] as String? ?? 'Помилка зʼєднання')),
+      warning: json['warning'] as String?,
+      errorCode: json['error_code'] as String?,
+      errorMessage: json['error_message'] as String?,
+      rawDetails: json['raw_details'] as String?,
+      durationMs: json['duration_ms'] as int? ?? 0,
+      isDemo: json['is_demo'] as bool? ?? false,
+    );
+  }
+}
+
+class AdminAuditLog {
+  final int id;
+  final String userId;
+  final String userEmail;
+  final String eventType;
+  final String status;
+  final String accountId;
+  final String queryId;
+  final String tokenMasked;
+  final String errorCode;
+  final String message;
+  final String details;
+  final int durationMs;
+  final String ipAddress;
+  final String createdAt;
+
+  AdminAuditLog({
+    required this.id,
+    required this.userId,
+    required this.userEmail,
+    required this.eventType,
+    required this.status,
+    required this.accountId,
+    required this.queryId,
+    required this.tokenMasked,
+    required this.errorCode,
+    required this.message,
+    required this.details,
+    required this.durationMs,
+    required this.ipAddress,
+    required this.createdAt,
+  });
+
+  factory AdminAuditLog.fromJson(Map<String, dynamic> json) {
+    return AdminAuditLog(
+      id: json['id'] as int? ?? 0,
+      userId: json['user_id'] as String? ?? '',
+      userEmail: json['user_email'] as String? ?? '',
+      eventType: json['event_type'] as String? ?? '',
+      status: json['status'] as String? ?? '',
+      accountId: json['account_id'] as String? ?? '',
+      queryId: json['query_id'] as String? ?? '',
+      tokenMasked: json['token_masked'] as String? ?? '',
+      errorCode: json['error_code'] as String? ?? '',
+      message: json['message'] as String? ?? '',
+      details: json['details'] as String? ?? '',
+      durationMs: json['duration_ms'] as int? ?? 0,
+      ipAddress: json['ip_address'] as String? ?? '',
+      createdAt: json['created_at'] as String? ?? '',
+    );
+  }
+
+  String get friendlyCreatedAt {
+    if (createdAt.isEmpty) return '';
+    try {
+      final dt = DateTime.parse(createdAt).toLocal();
+      return '${dt.day.toString().padLeft(2, '0')}.${dt.month.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+    } catch (_) {
+      return createdAt;
+    }
   }
 }
 

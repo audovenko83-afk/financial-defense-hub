@@ -53,6 +53,8 @@ func main() {
 	})
 	mux.HandleFunc("/api/ibkr/sync", handlers.SyncIBKRHandler)
 	mux.HandleFunc("/api/admin/users", handlers.AdminStatsHandler)
+	mux.HandleFunc("/api/admin/audit-logs", handlers.AdminAuditLogsHandler)
+
 	mux.HandleFunc("/api/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))

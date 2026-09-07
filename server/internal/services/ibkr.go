@@ -2,7 +2,6 @@ package services
 
 import (
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -77,46 +76,146 @@ type IBKRPosition struct {
 }
 
 type IBKRReportData struct {
-	AccountID string         `json:"account_id"`
-	Cash      float64        `json:"cash"`
-	Positions []IBKRPosition `json:"positions"`
-	SyncAt    time.Time      `json:"sync_at"`
+	AccountID  string         `json:"account_id"`
+	Cash       float64        `json:"cash"`
+	Positions  []IBKRPosition `json:"positions"`
+	SyncAt     time.Time      `json:"sync_at"`
+	DurationMs int64          `json:"duration_ms"`
+	RawDetails string         `json:"raw_details,omitempty"`
+	Warning    string         `json:"warning,omitempty"`
+	IsDemo     bool           `json:"is_demo,omitempty"`
+}
+
+type IBKRExchangeError struct {
+	ErrorCode       string `json:"error_code"`
+	ErrorMessage    string `json:"error_message"`
+	FriendlyMessage string `json:"friendly_message"`
+	RawDetails      string `json:"raw_details"`
+	HTTPStatus      int    `json:"http_status"`
+	DurationMs      int64  `json:"duration_ms"`
+}
+
+func (e *IBKRExchangeError) Error() string {
+	if e.FriendlyMessage != "" {
+		return e.FriendlyMessage
+	}
+	if e.ErrorMessage != "" {
+		return e.ErrorMessage
+	}
+	return fmt.Sprintf("Помилка IBKR (код %s)", e.ErrorCode)
+}
+
+func FriendlyIBKRExplanation(code, rawMsg string) string {
+	switch strings.TrimSpace(code) {
+	case "1001":
+		return "Запит містить невірні або порожні параметри."
+	case "1003":
+		return "Служба Flex Web Service IBKR тимчасово недоступна. Будь ласка, спробуйте пізніше."
+	case "1004":
+		return "Перевищено ліміт частоти запитів до IBKR. Зачекайте 2–3 хвилини перед наступною спробою."
+	case "1005":
+		return "Доступ обмежено за IP-адресою у налаштуваннях вашого акаунта IBKR."
+	case "1009":
+		return "Сервер IBKR відхилив запит через системну помилку. Спробуйте пізніше."
+	case "1012":
+		return "Токен ще не активовано в системі Interactive Brokers. Зазвичай активація займає кілька хвилин після створення."
+	case "1014":
+		return "Термін дії токена Flex Query закінчився (у кабінеті IBKR токен діє до 1 року). Згенеруйте новий токен у розділі Flex Web Service."
+	case "1015":
+		return "Невірний цифровий токен Flex Query. Перевірте, чи правильно скопійовано всі цифри токена з кабінету IBKR без пробілів."
+	case "1016":
+		return "Звіт ще генерується серверами IBKR. Будь ласка, зачекайте 1–2 хвилини та натисніть «Синхронізувати зараз»."
+	case "1017":
+		return "Час очікування генерації звіту в IBKR минув. Спробуйте запустити синхронізацію ще раз."
+	case "1018":
+		return "Невірний Query ID. Звіт із таким цифровим номером не знайдено у вашому акаунті Interactive Brokers. Перевірте номер у списку Flex Queries."
+	case "1019":
+		return "Звіт поставлено в чергу на генерацію в IBKR. Зачекайте 1–2 хвилини та оновіть."
+	case "1021":
+		return "Службу Flex Web Service не увімкнено. Активуйте перемикач Flex Web Service у кабінеті IBKR (Performance & Reports -> Flex Queries)."
+	default:
+		if strings.Contains(strings.ToLower(rawMsg), "token") {
+			return "Помилка токена IBKR: " + rawMsg + ". Перевірте токен у кабінеті IBKR."
+		}
+		if strings.Contains(strings.ToLower(rawMsg), "query") {
+			return "Помилка Query ID: " + rawMsg + ". Перевірте налаштування Flex Query."
+		}
+		if rawMsg != "" {
+			return "Помилка сервісу IBKR: " + rawMsg
+		}
+		return "Не вдалося отримати звіт від Interactive Brokers. Перевірте цифровий токен і Query ID."
+	}
 }
 
 // FetchFlexReport pulls open positions and cash balance from IBKR Flex Web Service
 func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, error) {
+	start := time.Now()
 	token = strings.TrimSpace(token)
 	queryID = strings.TrimSpace(queryID)
 
 	if token == "" || queryID == "" {
-		return nil, errors.New("токен та Query ID є обов'язковими для підключення до IBKR")
+		return nil, &IBKRExchangeError{
+			ErrorCode:       "EMPTY_PARAMS",
+			ErrorMessage:    "Token or QueryID empty",
+			FriendlyMessage: "Токен та Query ID є обов'язковими для підключення до IBKR",
+			DurationMs:      0,
+		}
 	}
 
 	if strings.EqualFold(token, "DEMO_IBKR") || strings.EqualFold(queryID, "DEMO") {
-		return s.getMockIBKRReport(), nil
+		time.Sleep(300 * time.Millisecond)
+		report := s.getMockIBKRReport()
+		report.DurationMs = time.Since(start).Milliseconds()
+		report.IsDemo = true
+		return report, nil
 	}
 
 	sendURL := fmt.Sprintf(IBKRSendRequestURL, token, queryID)
 	req, err := http.NewRequest(http.MethodGet, sendURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("помилка формування запиту: %w", err)
+		return nil, &IBKRExchangeError{
+			ErrorCode:       "REQ_BUILD_ERROR",
+			ErrorMessage:    err.Error(),
+			FriendlyMessage: "Помилка формування системного запиту до IBKR",
+			DurationMs:      time.Since(start).Milliseconds(),
+		}
 	}
 	req.Header.Set("User-Agent", "MillionDollarWay/1.0 (FinanceApp)")
 
 	res, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("помилка з'єднання з сервером IBKR: %w", err)
+		return nil, &IBKRExchangeError{
+			ErrorCode:       "NETWORK_ERROR",
+			ErrorMessage:    err.Error(),
+			FriendlyMessage: "Не вдалося з'єднатися з серверами Interactive Brokers. Перевірте інтернет-з'єднання.",
+			DurationMs:      time.Since(start).Milliseconds(),
+		}
 	}
 	defer res.Body.Close()
 
 	bodyBytes, err := io.ReadAll(res.Body)
 	if err != nil {
-		return nil, fmt.Errorf("не вдалося прочитати відповідь IBKR: %w", err)
+		return nil, &IBKRExchangeError{
+			ErrorCode:       "READ_BODY_ERROR",
+			ErrorMessage:    err.Error(),
+			FriendlyMessage: "Не вдалося прочитати відповідь від сервера IBKR",
+			HTTPStatus:      res.StatusCode,
+			DurationMs:      time.Since(start).Milliseconds(),
+		}
 	}
+
+	rawInitialXML := string(bodyBytes)
 
 	var initResp FlexStatementResponse
 	if err := xml.Unmarshal(bodyBytes, &initResp); err != nil {
-		return nil, fmt.Errorf("некоректна відповідь сервісу IBKR (XML error): %w", err)
+		return nil, &IBKRExchangeError{
+			ErrorCode:       "XML_PARSE_ERROR",
+			ErrorMessage:    err.Error(),
+			FriendlyMessage: "IBKR надіслав некоректну відповідь або сторінку помилки замість XML",
+			RawDetails:      rawInitialXML,
+			HTTPStatus:      res.StatusCode,
+			DurationMs:      time.Since(start).Milliseconds(),
+		}
 	}
 
 	if !strings.EqualFold(initResp.Status, "Success") {
@@ -124,12 +223,26 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 		if errMsg == "" {
 			errMsg = fmt.Sprintf("Код помилки IBKR: %s", initResp.ErrorCode)
 		}
-		return nil, fmt.Errorf("IBKR відхилив запит: %s", errMsg)
+		friendly := FriendlyIBKRExplanation(initResp.ErrorCode, errMsg)
+		return nil, &IBKRExchangeError{
+			ErrorCode:       initResp.ErrorCode,
+			ErrorMessage:    errMsg,
+			FriendlyMessage: friendly,
+			RawDetails:      rawInitialXML,
+			HTTPStatus:      res.StatusCode,
+			DurationMs:      time.Since(start).Milliseconds(),
+		}
 	}
 
 	refCode := initResp.ReferenceCode
 	if refCode == "" {
-		return nil, errors.New("IBKR не надав ReferenceCode для звіту")
+		return nil, &IBKRExchangeError{
+			ErrorCode:       "NO_REFERENCE_CODE",
+			ErrorMessage:    "Missing ReferenceCode",
+			FriendlyMessage: "IBKR успішно прийняв запит, але не надав ReferenceCode для завантаження",
+			RawDetails:      rawInitialXML,
+			DurationMs:      time.Since(start).Milliseconds(),
+		}
 	}
 
 	var reportData *IBKRReportData
@@ -152,13 +265,21 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 			continue
 		}
 
+		rawReportStr := string(rawReport)
+
 		var checkResp FlexStatementResponse
 		if err := xml.Unmarshal(rawReport, &checkResp); err == nil && checkResp.ErrorCode != "" {
-			if checkResp.ErrorCode == "1019" && attempt < maxAttempts {
-				log.Printf("[IBKR] Звіт ще генерується (1019), спроба %d/%d...", attempt, maxAttempts)
+			if (checkResp.ErrorCode == "1019" || checkResp.ErrorCode == "1016") && attempt < maxAttempts {
+				log.Printf("[IBKR] Звіт ще генерується (%s), спроба %d/%d...", checkResp.ErrorCode, attempt, maxAttempts)
 				continue
 			}
-			return nil, fmt.Errorf("помилка завантаження звіту IBKR: %s", checkResp.ErrorMessage)
+			return nil, &IBKRExchangeError{
+				ErrorCode:       checkResp.ErrorCode,
+				ErrorMessage:    checkResp.ErrorMessage,
+				FriendlyMessage: FriendlyIBKRExplanation(checkResp.ErrorCode, checkResp.ErrorMessage),
+				RawDetails:      rawReportStr,
+				DurationMs:      time.Since(start).Milliseconds(),
+			}
 		}
 
 		var queryResp FlexQueryResponse
@@ -167,11 +288,24 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 		}
 
 		reportData = parseFlexStatement(&queryResp.FlexStatements.FlexStatement)
+		reportData.RawDetails = fmt.Sprintf("Query: %s, Account: %s, Positions: %d, Cash: $%.2f",
+			queryResp.QueryName, reportData.AccountID, len(reportData.Positions), reportData.Cash)
 		break
 	}
 
 	if reportData == nil {
-		return nil, errors.New("не вдалося отримати готовий звіт IBKR за відведений час")
+		return nil, &IBKRExchangeError{
+			ErrorCode:       "TIMEOUT_WAITING_STATEMENT",
+			ErrorMessage:    "Statement generation timed out",
+			FriendlyMessage: "IBKR ще не завершив формування звіту. Зазвичай це займає 1–2 хвилини, спробуйте синхронізацію трохи згодом.",
+			DurationMs:      time.Since(start).Milliseconds(),
+		}
+	}
+
+	reportData.DurationMs = time.Since(start).Milliseconds()
+
+	if reportData.Cash == 0 && len(reportData.Positions) == 0 {
+		reportData.Warning = "Звіт успішно отримано, але в ньому немає відкритих позицій або кешу. Перевірте, чи додано секції 'Open Positions' та 'Cash Report' у конфігурації Flex Query в кабінеті IBKR."
 	}
 
 	return reportData, nil

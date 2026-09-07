@@ -7,6 +7,7 @@ import '../core/constants.dart';
 import '../models/models.dart';
 import '../widgets/stock_logo.dart';
 import '../widgets/info_helper_sheet.dart';
+import '../widgets/ibkr_connection_result_dialog.dart';
 import 'history_screen.dart';
 import 'settings_sheet.dart';
 import 'simulator_screen.dart';
@@ -26,10 +27,14 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   int _selectedTabIndex = 0;
   late Future<PortfolioData> _portfolioFuture;
   PortfolioData? _latestData;
+  String _userEmail = '';
 
   @override
   void initState() {
     super.initState();
+    SessionStore.readEmail().then((em) {
+      if (mounted) setState(() => _userEmail = em ?? '');
+    });
     _refreshData();
   }
 
@@ -238,39 +243,157 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     );
   }
 
-  Future<void> _syncIBKRFromPortfolio() async {
+  Future<void> _setupDemoIBKRAndSwitch() async {
+    try {
+      final res = await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/ibkr/config'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${widget.token}',
+        },
+        body: jsonEncode({'flex_token': 'DEMO_IBKR', 'query_id': 'DEMO'}),
+      );
+      final body = jsonDecode(utf8.decode(res.bodyBytes));
+      final result = IBKRResult.fromJson(body);
+
+      // Set mode to real
+      await http.post(
+        Uri.parse('${ApiConfig.baseUrl}/portfolio/mode'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ${widget.token}',
+        },
+        body: jsonEncode({'mode': 'real'}),
+      );
+
+      _refreshData();
+
+      if (mounted) {
+        IBKRConnectionResultDialog.show(
+          context,
+          result: result,
+          isAdmin: SessionStore.isAdmin(_userEmail),
+          onRetry: () => _syncIBKRFromPortfolio(showDialogResult: true),
+          onOpenGuide: _openSettings,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(backgroundColor: Colors.redAccent, content: Text('Помилка підключення Demo IBKR: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _syncIBKRFromPortfolio({bool showDialogResult = false}) async {
     try {
       final res = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/ibkr/sync'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      if (res.statusCode == 200) {
-        final body = jsonDecode(utf8.decode(res.bodyBytes));
-        _refreshData();
-        if (mounted) {
+      final body = jsonDecode(utf8.decode(res.bodyBytes));
+      final result = IBKRResult.fromJson(body);
+      _refreshData();
+
+      if (mounted) {
+        if (showDialogResult || !result.isSuccess) {
+          IBKRConnectionResultDialog.show(
+            context,
+            result: result,
+            isAdmin: SessionStore.isAdmin(_userEmail),
+            onRetry: () => _syncIBKRFromPortfolio(showDialogResult: true),
+            onOpenGuide: _openSettings,
+            onTryDemo: _setupDemoIBKRAndSwitch,
+          );
+        } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               backgroundColor: const Color(0xFF00FF94),
               content: Text(
-                'Синхронізація IBKR успішна! Оновлено ${body['positions_count']} позицій (Кеш: \$${body['cash']})',
+                'Синхронізація IBKR успішна! Оновлено ${result.positionsCount} позицій (Кеш: \$${result.cash.toStringAsFixed(2)})',
                 style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
               ),
             ),
           );
         }
-      } else {
-        throw Exception(res.body);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(backgroundColor: Colors.redAccent, content: Text('Помилка синхронізації IBKR: $e')),
+        final errResult = IBKRResult(
+          isSuccess: false,
+          status: 'error',
+          accountId: _latestData?.ibkrAccountId ?? '',
+          positionsCount: 0,
+          cash: 0,
+          friendlyMessage: 'Помилка синхронізації IBKR: ${e.toString().replaceAll("Exception: ", "")}',
+          errorMessage: e.toString(),
+        );
+        IBKRConnectionResultDialog.show(
+          context,
+          result: errResult,
+          isAdmin: SessionStore.isAdmin(_userEmail),
+          onRetry: () => _syncIBKRFromPortfolio(showDialogResult: true),
+          onOpenGuide: _openSettings,
+          onTryDemo: _setupDemoIBKRAndSwitch,
         );
       }
     }
   }
 
   Future<void> _confirmSwitchMode(bool toReal) async {
+    if (toReal && (_latestData?.ibkrConfigured != true)) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF161B26),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: const Row(
+            children: [
+              Icon(Icons.hub_rounded, color: Color(0xFF00E5FF)),
+              SizedBox(width: 8),
+              Expanded(child: Text('Підключення до IBKR', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+            ],
+          ),
+          content: const Text(
+            'Рахунок Interactive Brokers ще не налаштовано!\n\n'
+            'Щоб бачити дані реального рахунку, ви можете ввести числовий токен Flex Query, або спробувати миттєвий тестовий демо-рахунок з живими біржовими даними.',
+            style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('Скасувати', style: TextStyle(color: Colors.white54)),
+            ),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF00E5FF)),
+              icon: const Icon(Icons.key_rounded, size: 16),
+              label: const Text('Ввести токен'),
+              onPressed: () => Navigator.pop(ctx, 'input'),
+            ),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF00FF94), foregroundColor: Colors.black),
+              icon: const Icon(Icons.play_circle_outline_rounded, size: 16),
+              label: const Text('Швидкий тест IBKR', style: TextStyle(fontWeight: FontWeight.bold)),
+              onPressed: () => Navigator.pop(ctx, 'demo'),
+            ),
+          ],
+        ),
+      );
+
+      if (choice == 'demo') {
+        await _setupDemoIBKRAndSwitch();
+        return;
+      } else if (choice == 'input') {
+        _openSettings();
+        return;
+      } else {
+        return;
+      }
+    }
+
+    if (!mounted) return;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -336,7 +459,9 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       );
       if (res.statusCode == 200) {
         _refreshData();
-        if (mounted) {
+        if (toReal && (_latestData?.ibkrConfigured == true)) {
+          _syncIBKRFromPortfolio(showDialogResult: true);
+        } else if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               backgroundColor: toReal ? const Color(0xFF00FF94) : const Color(0xFF00E5FF),
@@ -664,37 +789,136 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         ),
         const SizedBox(height: 10),
         if (data.positions.isEmpty)
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: const Color(0xFF161B26),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-            ),
-            child: Column(
-              children: [
-                const Icon(Icons.rocket_launch_outlined, size: 40, color: Color(0xFF00FF94)),
-                const SizedBox(height: 10),
-                const Text('Почніть формування портфеля!', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                const SizedBox(height: 4),
-                const Text('Перейдіть у вкладку "Стратегія 40" та купуйте найкращі акції за планом.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12)),
-                const SizedBox(height: 14),
-                FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF00FF94),
-                    foregroundColor: Colors.black,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  onPressed: () => setState(() => _selectedTabIndex = 1),
-                  icon: const Icon(Icons.track_changes_rounded),
-                  label: const Text('Відкрити Стратегію 40', style: TextStyle(fontWeight: FontWeight.w900)),
-                ),
-              ],
-            ),
-          )
+          (data.mode == 'real' ? _buildIBKREmptyCard(data) : _buildDemoEmptyCard())
         else
           ...data.positions.map((pos) => _buildPositionCard(pos)),
       ],
+    );
+  }
+
+  Widget _buildDemoEmptyCard() {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: const Color(0xFF161B26),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        children: [
+          const Icon(Icons.rocket_launch_outlined, size: 40, color: Color(0xFF00FF94)),
+          const SizedBox(height: 10),
+          const Text('Почніть формування портфеля!', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+          const SizedBox(height: 4),
+          const Text('Перейдіть у вкладку "Стратегія 40" та купуйте найкращі акції за планом.', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12)),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF00FF94),
+              foregroundColor: Colors.black,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () => setState(() => _selectedTabIndex = 1),
+            icon: const Icon(Icons.track_changes_rounded),
+            label: const Text('Відкрити Стратегію 40', style: TextStyle(fontWeight: FontWeight.w900)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIBKREmptyCard(PortfolioData data) {
+    final isConfigured = data.ibkrConfigured;
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: const Color(0xFF161B26),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF00FF94).withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF00FF94).withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.hub_rounded, size: 38, color: Color(0xFF00FF94)),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            isConfigured ? 'Рахунок IBKR очікує синхронізації' : 'Рахунок Interactive Brokers не підключено',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            isConfigured
+                ? 'Налаштування підключення збережено. Натисніть кнопку нижче, щоб отримати позиції та баланс кешу з IBKR.'
+                : 'Для завантаження реального портфеля введіть цифровий токен Flex Query, або спробуйте живий демонстраційний рахунок.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white60, fontSize: 12, height: 1.4),
+          ),
+          const SizedBox(height: 16),
+          if (isConfigured) ...[
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF00FF94),
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.sync_rounded),
+                label: const Text('Синхронізувати з IBKR зараз', style: TextStyle(fontWeight: FontWeight.w900)),
+                onPressed: () => _syncIBKRFromPortfolio(showDialogResult: true),
+              ),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white70,
+                side: const BorderSide(color: Colors.white24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              icon: const Icon(Icons.tune_rounded, size: 16),
+              label: const Text('Змінити налаштування Flex Query'),
+              onPressed: _openSettings,
+            ),
+          ] else ...[
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF00FF94),
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.play_circle_outline_rounded),
+                label: const Text('🚀 Швидкий тест IBKR (Live Demo)', style: TextStyle(fontWeight: FontWeight.w900)),
+                onPressed: _setupDemoIBKRAndSwitch,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF00E5FF),
+                  side: BorderSide(color: const Color(0xFF00E5FF).withValues(alpha: 0.4)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                icon: const Icon(Icons.key_rounded, size: 16),
+                label: const Text('🔑 Ввести мій токен Flex Query', style: TextStyle(fontWeight: FontWeight.bold)),
+                onPressed: _openSettings,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 

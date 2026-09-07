@@ -5,6 +5,7 @@ import (
 	"errors"
 	"finance-api/internal/services"
 	"finance-api/internal/storage"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -481,6 +482,25 @@ func AdminStatsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+func getClientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		parts := strings.Split(fwd, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	return r.RemoteAddr
+}
+
+func maskToken(token string) string {
+	token = strings.TrimSpace(token)
+	if len(token) > 6 {
+		return strings.Repeat("*", len(token)-4) + token[len(token)-4:]
+	}
+	if len(token) > 0 {
+		return "******"
+	}
+	return ""
+}
+
 type ModeRequest struct {
 	Mode string `json:"mode"`
 }
@@ -509,6 +529,16 @@ func PortfolioModeHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		ip := getClientIP(r)
+		userEmail, _ := store.GetUserEmail(userID)
+		_ = store.AddAuditLog(storage.AuditLog{
+			UserID:    userID,
+			UserEmail: userEmail,
+			EventType: "MODE_SWITCH",
+			Status:    "SUCCESS",
+			Message:   fmt.Sprintf("Перемикання режиму портфеля: %s", req.Mode),
+			IPAddress: ip,
+		})
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "mode": req.Mode})
 		return
@@ -552,24 +582,62 @@ func SaveIBKRConfigHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req SaveIBKRConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FlexToken == "" || req.QueryID == "" {
-		http.Error(w, "Flex Token та Query ID є обов'язковими", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.QueryID == "" {
+		http.Error(w, "Query ID є обов'язковим для збереження", http.StatusBadRequest)
 		return
 	}
 
-	if err := store.SaveIBKRConnection(userID, req.FlexToken, req.QueryID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	actualToken, err := store.SaveIBKRConnection(userID, req.FlexToken, req.QueryID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	report, syncErr := services.DefaultIBKRService.FetchFlexReport(req.FlexToken, req.QueryID)
+	ip := getClientIP(r)
+	userEmail, _ := store.GetUserEmail(userID)
+	masked := maskToken(actualToken)
+
+	report, syncErr := services.DefaultIBKRService.FetchFlexReport(actualToken, req.QueryID)
 	if syncErr != nil {
 		store.SaveIBKRSyncFailure(userID, syncErr)
+
+		errCode := "ERROR"
+		rawDetails := syncErr.Error()
+		durationMs := int64(0)
+		friendlyMsg := syncErr.Error()
+
+		var ibkrErr *services.IBKRExchangeError
+		if errors.As(syncErr, &ibkrErr) {
+			errCode = ibkrErr.ErrorCode
+			rawDetails = ibkrErr.RawDetails
+			durationMs = ibkrErr.DurationMs
+			friendlyMsg = ibkrErr.FriendlyMessage
+		}
+
+		_ = store.AddAuditLog(storage.AuditLog{
+			UserID:      userID,
+			UserEmail:   userEmail,
+			EventType:   "IBKR_CONFIG_SAVE",
+			Status:      "ERROR",
+			QueryID:     req.QueryID,
+			TokenMasked: masked,
+			ErrorCode:   errCode,
+			Message:     friendlyMsg,
+			Details:     rawDetails,
+			DurationMs:  durationMs,
+			IPAddress:   ip,
+		})
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":  "saved_with_warning",
-			"warning": "Налаштування збережено, але синхронізація повернула помилку: " + syncErr.Error(),
+			"status":           "error",
+			"friendly_message": friendlyMsg,
+			"error_code":       errCode,
+			"error_message":    syncErr.Error(),
+			"raw_details":      rawDetails,
+			"duration_ms":      durationMs,
+			"warning":          "Налаштування збережено, але синхронізація повернула помилку: " + friendlyMsg,
 		})
 		return
 	}
@@ -580,12 +648,30 @@ func SaveIBKRConfigHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = store.AddAuditLog(storage.AuditLog{
+		UserID:      userID,
+		UserEmail:   userEmail,
+		EventType:   "IBKR_CONFIG_SAVE",
+		Status:      "SUCCESS",
+		AccountID:   report.AccountID,
+		QueryID:     req.QueryID,
+		TokenMasked: masked,
+		Message:     fmt.Sprintf("Успішно підключено IBKR: рахунок %s, %d позицій, кеш $%.2f", report.AccountID, len(report.Positions), report.Cash),
+		Details:     report.RawDetails,
+		DurationMs:  report.DurationMs,
+		IPAddress:   ip,
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"status":          "ok",
-		"account_id":      report.AccountID,
-		"positions_count": len(report.Positions),
-		"cash":            report.Cash,
+		"status":           "ok",
+		"account_id":       report.AccountID,
+		"positions_count":  len(report.Positions),
+		"cash":             report.Cash,
+		"friendly_message": "Рахунок IBKR успішно підключено та синхронізовано!",
+		"warning":          report.Warning,
+		"duration_ms":      report.DurationMs,
+		"is_demo":          report.IsDemo,
 	})
 }
 
@@ -606,10 +692,51 @@ func SyncIBKRHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ip := getClientIP(r)
+	userEmail, _ := store.GetUserEmail(userID)
+	masked := maskToken(token)
+
 	report, syncErr := services.DefaultIBKRService.FetchFlexReport(token, queryID)
 	if syncErr != nil {
 		store.SaveIBKRSyncFailure(userID, syncErr)
-		http.Error(w, "Помилка синхронізації з IBKR: "+syncErr.Error(), http.StatusBadRequest)
+
+		errCode := "ERROR"
+		rawDetails := syncErr.Error()
+		durationMs := int64(0)
+		friendlyMsg := syncErr.Error()
+
+		var ibkrErr *services.IBKRExchangeError
+		if errors.As(syncErr, &ibkrErr) {
+			errCode = ibkrErr.ErrorCode
+			rawDetails = ibkrErr.RawDetails
+			durationMs = ibkrErr.DurationMs
+			friendlyMsg = ibkrErr.FriendlyMessage
+		}
+
+		_ = store.AddAuditLog(storage.AuditLog{
+			UserID:      userID,
+			UserEmail:   userEmail,
+			EventType:   "IBKR_SYNC",
+			Status:      "ERROR",
+			QueryID:     queryID,
+			TokenMasked: masked,
+			ErrorCode:   errCode,
+			Message:     friendlyMsg,
+			Details:     rawDetails,
+			DurationMs:  durationMs,
+			IPAddress:   ip,
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":           "error",
+			"friendly_message": friendlyMsg,
+			"error_code":       errCode,
+			"error_message":    syncErr.Error(),
+			"raw_details":      rawDetails,
+			"duration_ms":      durationMs,
+		})
 		return
 	}
 
@@ -619,12 +746,55 @@ func SyncIBKRHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = store.AddAuditLog(storage.AuditLog{
+		UserID:      userID,
+		UserEmail:   userEmail,
+		EventType:   "IBKR_SYNC",
+		Status:      "SUCCESS",
+		AccountID:   report.AccountID,
+		QueryID:     queryID,
+		TokenMasked: masked,
+		Message:     fmt.Sprintf("Синхронізовано IBKR: рахунок %s, %d позицій, кеш $%.2f", report.AccountID, len(report.Positions), report.Cash),
+		Details:     report.RawDetails,
+		DurationMs:  report.DurationMs,
+		IPAddress:   ip,
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"status":          "ok",
-		"account_id":      report.AccountID,
-		"positions_count": len(report.Positions),
-		"cash":            report.Cash,
+		"status":           "ok",
+		"account_id":       report.AccountID,
+		"positions_count":  len(report.Positions),
+		"cash":             report.Cash,
+		"friendly_message": "Синхронізація з Interactive Brokers успішна!",
+		"warning":          report.Warning,
+		"duration_ms":      report.DurationMs,
+		"is_demo":          report.IsDemo,
 	})
+}
+
+func AdminAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	email, err := store.GetUserEmail(userID)
+	if err != nil || !isAdminEmail(email) {
+		http.Error(w, "Доступ заборонено (лише для адміністратора)", http.StatusForbidden)
+		return
+	}
+	status := r.URL.Query().Get("status")
+	logs, err := store.GetAuditLogs(100, status)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"logs": logs})
 }
 

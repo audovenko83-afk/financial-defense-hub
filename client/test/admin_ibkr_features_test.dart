@@ -1,5 +1,7 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:client/models/models.dart';
+import 'package:client/widgets/ibkr_connection_result_dialog.dart';
 
 void main() {
   group('Admin & IBKR Models Test', () {
@@ -119,5 +121,135 @@ void main() {
       expect(cfg.accountId, 'U9999999');
       expect(cfg.mode, 'real');
     });
+    test('IBKRResult parses success and error payloads', () {
+      final successJson = {
+        'status': 'ok',
+        'account_id': 'U12345678',
+        'positions_count': 5,
+        'cash': 3450.0,
+        'friendly_message': 'Рахунок IBKR успішно підключено та синхронізовано!',
+        'duration_ms': 1200,
+        'is_demo': false,
+      };
+      final success = IBKRResult.fromJson(successJson);
+      expect(success.isSuccess, true);
+      expect(success.accountId, 'U12345678');
+      expect(success.positionsCount, 5);
+      expect(success.cash, 3450.0);
+      expect(success.durationMs, 1200);
+
+      final errorJson = {
+        'status': 'error',
+        'error_code': '1014',
+        'friendly_message': 'Термін дії токена Flex Query закінчився.',
+        'error_message': 'Flex query expired',
+        'raw_details': '<ErrorCode>1014</ErrorCode>',
+        'duration_ms': 450,
+      };
+      final err = IBKRResult.fromJson(errorJson);
+      expect(err.isSuccess, false);
+      expect(err.errorCode, '1014');
+      expect(err.friendlyMessage, 'Термін дії токена Flex Query закінчився.');
+      expect(err.errorMessage, 'Flex query expired');
+      expect(err.durationMs, 450);
+    });
+
+    test('AdminAuditLog parses JSON and formats friendly date', () {
+      final logJson = {
+        'id': 1,
+        'user_id': 'usr-123',
+        'user_email': 'test@gmail.com',
+        'event_type': 'IBKR_SYNC',
+        'status': 'SUCCESS',
+        'account_id': 'U9876543',
+        'query_id': '123456',
+        'token_masked': '****4321',
+        'error_code': '',
+        'message': 'Синхронізовано 5 позицій',
+        'details': 'Query: Positions, Cash: 3450',
+        'duration_ms': 850,
+        'ip_address': '127.0.0.1',
+        'created_at': '2026-09-07T14:30:00Z',
+      };
+      final log = AdminAuditLog.fromJson(logJson);
+      expect(log.id, 1);
+      expect(log.userEmail, 'test@gmail.com');
+      expect(log.eventType, 'IBKR_SYNC');
+      expect(log.status, 'SUCCESS');
+      expect(log.durationMs, 850);
+      expect(log.friendlyCreatedAt, isNotEmpty);
+    });
+
+  });
+
+  group('IBKRConnectionResultDialog Widget Tests', () {
+    testWidgets('Renders success dialog with account and cash details', (tester) async {
+      final successResult = IBKRResult(
+        isSuccess: true,
+        status: 'ok',
+        accountId: 'U99988877',
+        positionsCount: 4,
+        cash: 5200.0,
+        friendlyMessage: 'Рахунок IBKR успішно підключено та синхронізовано!',
+        durationMs: 950,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: IBKRConnectionResultDialog(
+              result: successResult,
+              isAdmin: false,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Зʼєднання з IBKR встановлено!'), findsOneWidget);
+      expect(find.text('Рахунок IBKR успішно підключено та синхронізовано!'), findsOneWidget);
+      expect(find.text('U99988877'), findsOneWidget);
+      expect(find.text('\$5200.00'), findsOneWidget);
+      expect(find.text('4 поз.'), findsOneWidget);
+      expect(find.text('Перейти до портфеля'), findsOneWidget);
+    });
+
+    testWidgets('Renders error dialog with tips and admin details', (tester) async {
+      final errorResult = IBKRResult(
+        isSuccess: false,
+        status: 'error',
+        accountId: '',
+        positionsCount: 0,
+        cash: 0,
+        friendlyMessage: 'Невірний цифровий токен Flex Query.',
+        errorCode: '1015',
+        errorMessage: 'Invalid token',
+        rawDetails: '<ErrorCode>1015</ErrorCode>',
+        durationMs: 320,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: IBKRConnectionResultDialog(
+              result: errorResult,
+              isAdmin: true,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Не вдалося підключитися до IBKR'), findsOneWidget);
+      expect(find.text('Невірний цифровий токен Flex Query.'), findsOneWidget);
+      expect(find.text('Що потрібно перевірити:'), findsOneWidget);
+      expect(find.text('Звіт для адміністратора (Журнал подій)'), findsOneWidget);
+
+      // Tap on admin section to expand
+      await tester.tap(find.text('Звіт для адміністратора (Журнал подій)'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Код помилки IBKR: 1015'), findsOneWidget);
+      expect(find.text('Тривалість: 320 мс'), findsOneWidget);
+    });
+
   });
 }

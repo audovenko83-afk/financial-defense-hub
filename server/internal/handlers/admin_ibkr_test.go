@@ -129,4 +129,44 @@ func TestAdminAndIBKRFlow(t *testing.T) {
 	if portData.Cash <= 0 {
 		t.Errorf("expected positive cash, got %f", portData.Cash)
 	}
+
+	// 8. Admin accesses Audit Logs -> 200 OK with logged events
+	logsReq := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs", nil)
+	logsReq.Header.Set("Authorization", "Bearer "+adminToken)
+	logsRec := httptest.NewRecorder()
+	AdminAuditLogsHandler(logsRec, logsReq)
+	if logsRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for audit logs, got %d: %s", logsRec.Code, logsRec.Body.String())
+	}
+	var logsResp map[string][]storage.AuditLog
+	if err := json.Unmarshal(logsRec.Body.Bytes(), &logsResp); err != nil {
+		t.Fatalf("failed to unmarshal logs: %v", err)
+	}
+	logs := logsResp["logs"]
+	if len(logs) == 0 {
+		t.Fatal("expected at least 1 audit log, got 0")
+	}
+	hasModeSwitch := false
+	hasIBKRConfig := false
+	for _, l := range logs {
+		if l.EventType == "MODE_SWITCH" {
+			hasModeSwitch = true
+		}
+		if l.EventType == "IBKR_CONFIG_SAVE" {
+			hasIBKRConfig = true
+			if l.Status != "SUCCESS" {
+				t.Errorf("expected IBKR_CONFIG_SAVE status SUCCESS, got %s", l.Status)
+			}
+			if l.TokenMasked == "" {
+				t.Error("expected masked token in audit log")
+			}
+		}
+	}
+	if !hasModeSwitch {
+		t.Error("expected audit log for MODE_SWITCH")
+	}
+	if !hasIBKRConfig {
+		t.Error("expected audit log for IBKR_CONFIG_SAVE")
+	}
+
 }
