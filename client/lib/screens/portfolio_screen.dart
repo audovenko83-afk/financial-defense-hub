@@ -829,6 +829,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
   Widget _buildIBKREmptyCard(PortfolioData data) {
     final isConfigured = data.ibkrConfigured;
+    final hasSynced = data.ibkrLastSyncAt != null && data.ibkrLastSyncAt!.isNotEmpty;
+
     return Container(
       padding: const EdgeInsets.all(22),
       decoration: BoxDecoration(
@@ -848,14 +850,18 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           ),
           const SizedBox(height: 12),
           Text(
-            isConfigured ? 'Рахунок IBKR очікує синхронізації' : 'Рахунок Interactive Brokers не підключено',
+            isConfigured 
+                ? (hasSynced ? 'Немає відкритих позицій' : 'Рахунок IBKR очікує синхронізації') 
+                : 'Рахунок Interactive Brokers не підключено',
             textAlign: TextAlign.center,
             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
           const SizedBox(height: 6),
           Text(
             isConfigured
-                ? 'Налаштування підключення збережено. Натисніть кнопку нижче, щоб отримати позиції та баланс кешу з IBKR.'
+                ? (hasSynced
+                    ? 'Ваш рахунок успішно синхронізовано з Interactive Brokers, але наразі ви не маєте жодної відкритої позиції (купленої акції).'
+                    : 'Налаштування підключення збережено. Натисніть кнопку нижче, щоб отримати позиції та баланс кешу з IBKR.')
                 : 'Для завантаження реального портфеля введіть цифровий токен Flex Query, або спробуйте живий демонстраційний рахунок.',
             textAlign: TextAlign.center,
             style: const TextStyle(color: Colors.white60, fontSize: 12, height: 1.4),
