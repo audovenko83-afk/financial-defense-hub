@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  width:1024px; height:500px; background:#070A0F; overflow:hidden;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; color:#FFF;
+}
+.banner {
+  width:1024px; height:500px; position:relative; display:flex; align-items:center;
+  justify-content:space-between; padding:0 64px;
+  background: radial-gradient(circle at 75% 35%, rgba(0,255,148,0.15) 0%, rgba(7,10,15,0) 55%),
+              radial-gradient(circle at 15% 25%, rgba(0,229,255,0.10) 0%, rgba(7,10,15,0) 45%), #070A0F;
+}
+.grid {
+  position:absolute; inset:0;
+  background-image:linear-gradient(to right,rgba(0,255,148,0.04) 1px,transparent 1px),
+                   linear-gradient(to bottom,rgba(0,255,148,0.04) 1px,transparent 1px);
+  background-size:32px 32px;
+}
+.left { position:relative; z-index:5; max-width:480px; }
+.badge {
+  display:inline-flex; align-items:center; gap:8px; padding:6px 14px;
+  background:rgba(0,255,148,0.08); border:1px solid rgba(0,255,148,0.3);
+  border-radius:20px; font-size:11px; font-weight:700; letter-spacing:1px;
+  text-transform:uppercase; color:#00FF94; margin-bottom:18px;
+}
+.badge-dot { width:6px; height:6px; border-radius:50%; background:#00FF94; box-shadow:0 0 6px #00FF94; }
+.title { font-size:44px; font-weight:900; line-height:1.1; letter-spacing:-0.5px; margin-bottom:8px; }
+.title .neon {
+  background:linear-gradient(90deg,#00FF94,#00E5FF);
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+}
+.sub { font-size:21px; font-weight:600; color:#CBD5E1; margin-bottom:24px; }
+.sub strong { color:#00FF94; font-weight:800; }
+.list { display:flex; flex-direction:column; gap:12px; }
+.item { display:flex; align-items:center; gap:12px; font-size:14.5px; font-weight:500; color:#94A3B8; }
+.icon-box {
+  width:28px; height:28px; border-radius:8px; background:#121824;
+  border:1px solid rgba(0,255,148,0.25); display:flex; align-items:center;
+  justify-content:center; font-size:14px; flex-shrink:0;
+}
+.right { position:relative; z-index:5; width:390px; }
+.card {
+  position:relative; width:380px; padding:24px;
+  background:linear-gradient(135deg,rgba(22,27,38,0.95),rgba(15,23,42,0.9));
+  border:1.5px solid rgba(0,255,148,0.35); border-radius:24px;
+  box-shadow:0 20px 50px rgba(0,0,0,0.7),0 0 40px rgba(0,255,148,0.15);
+}
+.card-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.status { display:flex; align-items:center; gap:6px; font-size:12px; color:#94A3B8; font-weight:600; }
+.green-dot { width:7px; height:7px; border-radius:50%; background:#00FF94; box-shadow:0 0 8px #00FF94; }
+.pill-green {
+  padding:4px 10px; background:rgba(0,255,148,0.15); border:1px solid rgba(0,255,148,0.4);
+  border-radius:14px; color:#00FF94; font-size:12px; font-weight:700;
+}
+.balance-label { font-size:11px; color:#64748B; text-transform:uppercase; letter-spacing:1px; font-weight:700; }
+.balance-val { font-size:38px; font-weight:900; color:#FFF; display:flex; align-items:baseline; gap:2px; }
+.balance-val span { font-size:24px; color:#00FF94; }
+.target-badge {
+  position:absolute; top:-16px; right:16px;
+  background:linear-gradient(135deg,#00FF94,#00E5FF); padding:7px 14px;
+  border-radius:14px; color:#070A0F; font-weight:900; font-size:12px;
+  box-shadow:0 8px 25px rgba(0,255,148,0.4); z-index:10;
+}
+.asset-tag {
+  margin-top:14px; padding:8px 14px; background:#0F1622;
+  border:1px solid rgba(0,229,255,0.25); border-radius:14px;
+  display:flex; align-items:center; justify-content:space-between; font-size:12px;
+}
+</style>
+</head>
+<body>
+<div class="banner">
+  <div class="grid"></div>
+  <div class="left">
+    <div class="badge"><span class="badge-dot"></span><span>FINTECH ХАБ • ІНВЕСТИЦІЇ</span></div>
+    <h1 class="title">ФІНАНСОВИЙ<br><span class="neon">ЗАХИСТ</span></h1>
+    <div class="sub">Стратегія: <strong>Шлях до $1 000 000</strong></div>
+    <div class="list">
+      <div class="item"><div class="icon-box">🛡️</div><span><strong>Захист активів</strong> та надійний капітал</span></div>
+      <div class="item"><div class="icon-box">📈</div><span><strong>Портфель:</strong> акції США, ETF, дивіденди</span></div>
+      <div class="item"><div class="icon-box">⚡</div><span><strong>Симулятор «Машина часу»</strong></span></div>
+    </div>
+  </div>
+  <div class="right">
+    <div class="target-badge">🎯 ЦІЛЬ: $1 000 000</div>
+    <div class="card">
+      <div class="card-top">
+        <div class="status"><span class="green-dot"></span><span>Мій портфель • LIVE</span></div>
+        <div class="pill-green">▲ +42.8%</div>
+      </div>
+      <div class="balance-label">Загальна вартість</div>
+      <div class="balance-val"><span>$</span>1,000,000</div>
+      <svg width="100%" height="75" viewBox="0 0 330 75" fill="none" style="margin-top:10px;">
+        <defs>
+          <linearGradient id="cg" x1="165" y1="0" x2="165" y2="75" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#00FF94" stop-opacity="0.3" />
+            <stop offset="100%" stop-color="#00FF94" stop-opacity="0" />
+          </linearGradient>
+        </defs>
+        <path d="M 0 60 C 50 50, 80 60, 120 40 C 160 20, 190 45, 230 25 C 270 8, 290 16, 330 5 L 330 75 L 0 75 Z" fill="url(#cg)" />
+        <path d="M 0 60 C 50 50, 80 60, 120 40 C 160 20, 190 45, 230 25 C 270 8, 290 16, 330 5" stroke="#00FF94" stroke-width="3" stroke-linecap="round" />
+        <circle cx="120" cy="40" r="3" fill="#00E5FF" />
+        <circle cx="230" cy="25" r="3" fill="#00FF94" />
+        <circle cx="330" cy="5" r="4" fill="#FFF" />
+        <circle cx="330" cy="5" r="7" stroke="#00FF94" stroke-width="1.5" />
+      </svg>
+      <div class="asset-tag">
+        <span style="color:#94A3B8; font-weight:600;">🚀 VOO • AAPL • NVDA</span>
+        <span style="color:#00FF94; font-weight:700;">+26.4% річних</span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

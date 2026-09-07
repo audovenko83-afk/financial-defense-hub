@@ -1,0 +1,382 @@
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"finance-api/internal/services"
+	"finance-api/internal/storage"
+	"log"
+	"net/http"
+	"strings"
+)
+
+var store *storage.Storage
+
+func Init(s *storage.Storage) {
+	store = s
+}
+
+func userIDFromRequest(r *http.Request) (string, error) {
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		return "", errors.New("потрібна авторизація")
+	}
+	return store.UserIDForSession(strings.TrimPrefix(header, "Bearer "))
+}
+
+type credentialsRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func RegisterHandler(w http.ResponseWriter, r *http.Request) {
+	var req credentialsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || len(req.Password) < 8 {
+		http.Error(w, "Email і пароль мають бути коректними; пароль — щонайменше 8 символів", http.StatusBadRequest)
+		return
+	}
+	user, err := store.CreateUser(strings.ToLower(strings.TrimSpace(req.Email)), req.Password)
+	if err != nil {
+		http.Error(w, "Не вдалося створити профіль", http.StatusConflict)
+		return
+	}
+	token, err := store.CreateSession(user.ID)
+	if err != nil {
+		http.Error(w, "Не вдалося створити сесію", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"token": token, "email": user.Email})
+}
+
+func LoginHandler(w http.ResponseWriter, r *http.Request) {
+	var req credentialsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Некоректні дані входу", http.StatusBadRequest)
+		return
+	}
+	user, err := store.AuthenticateUser(strings.ToLower(strings.TrimSpace(req.Email)), req.Password)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	token, err := store.CreateSession(user.ID)
+	if err != nil {
+		http.Error(w, "Не вдалося створити сесію", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"token": token, "email": user.Email})
+}
+func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	if err := store.DeleteAccount(userID); err != nil {
+		http.Error(w, "Помилка при видаленні акаунту: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"deleted"}`))
+}
+
+
+
+func SimulateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var input services.SimulationInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "Некоректні параметри симуляції", http.StatusBadRequest)
+		return
+	}
+	results, err := services.StressTest(input)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"scenarios": results})
+}
+
+func GetPortfolioHandler(w http.ResponseWriter, r *http.Request) {
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	data, err := store.GetPortfolio(userID)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+func GetTransactionsHandler(w http.ResponseWriter, r *http.Request) {
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	list, err := store.GetTransactions(userID)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if list == nil {
+		list = []storage.Transaction{}
+	}
+	json.NewEncoder(w).Encode(list)
+}
+
+func GetDividendsHandler(w http.ResponseWriter, r *http.Request) {
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	list, err := store.GetDividends(userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if list == nil {
+		list = []storage.Dividend{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
+}
+
+type TransactionRequest struct {
+	Ticker     string  `json:"ticker"`
+	AssetClass string  `json:"asset_class"`
+	Shares     float64 `json:"shares"`
+	Price      float64 `json:"price"`
+}
+
+type DividendRequest struct {
+	Ticker   string  `json:"ticker"`
+	Amount   float64 `json:"amount"`
+	Currency string  `json:"currency"`
+}
+
+func AddDividendHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	var req DividendRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Ticker == "" || req.Amount <= 0 {
+		http.Error(w, "Некоректні дані дивідендів", http.StatusBadRequest)
+		return
+	}
+	if req.Currency == "" {
+		req.Currency = "USD"
+	}
+	if err := store.AddDividend(userID, req.Ticker, req.Amount, req.Currency); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+}
+
+func AddTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	var req TransactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Ticker == "" || req.Shares <= 0 || req.Price <= 0 {
+		http.Error(w, "Некоректні дані транзакції (перевірте тікер, кількість та ціну)", http.StatusBadRequest)
+		return
+	}
+
+	err = store.AddTransaction(userID, req.Ticker, req.AssetClass, req.Shares, req.Price)
+	if err != nil {
+		log.Printf("[ПОМИЛКА] %v", err)
+		http.Error(w, err.Error(), http.StatusPaymentRequired)
+		return
+	}
+
+	log.Printf("[API] Оброблено покупку: %s (%.2f шт по %.2f)", req.Ticker, req.Shares, req.Price)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "bought": req.Ticker, "shares": req.Shares, "price": req.Price})
+}
+
+type CashRequest struct {
+	Amount float64 `json:"amount"`
+}
+
+func DepositCashHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	var req CashRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Amount <= 0 {
+		http.Error(w, "Сума поповнення має бути більшою за нуль", http.StatusBadRequest)
+		return
+	}
+	if err := store.DepositCash(userID, req.Amount); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "deposited": req.Amount})
+}
+
+func WithdrawCashHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	var req CashRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Amount <= 0 {
+		http.Error(w, "Сума виведення має бути більшою за нуль", http.StatusBadRequest)
+		return
+	}
+	if err := store.WithdrawCash(userID, req.Amount); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "withdrawn": req.Amount})
+}
+
+type SellTransactionRequest struct {
+	Ticker string  `json:"ticker"`
+	Shares float64 `json:"shares"`
+	Price  float64 `json:"price"`
+}
+
+func SellTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	var req SellTransactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Ticker == "" || req.Shares <= 0 || req.Price <= 0 {
+		http.Error(w, "Некоректні параметри продажу (перевірте тікер, кількість та ціну)", http.StatusBadRequest)
+		return
+	}
+	if err := store.SellTransaction(userID, req.Ticker, req.Shares, req.Price); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{"status": "ok", "sold": req.Ticker, "shares": req.Shares, "price": req.Price})
+}
+
+func MarketQuoteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ticker := r.URL.Query().Get("ticker")
+	if ticker == "" {
+		http.Error(w, "Параметр ticker є обов'язковим", http.StatusBadRequest)
+		return
+	}
+	quote, err := services.DefaultMarketService.FetchQuote(ticker)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(quote)
+}
+
+func MarketHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ticker := r.URL.Query().Get("ticker")
+	if ticker == "" {
+		http.Error(w, "Параметр ticker є обов'язковим", http.StatusBadRequest)
+		return
+	}
+	rangeStr := r.URL.Query().Get("range")
+	history, err := services.DefaultMarketService.FetchHistory(ticker, rangeStr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"ticker": ticker, "range": rangeStr, "points": history})
+}
+
+type InvestPlanRequest struct {
+	AmountPerStock float64                 `json:"amount_per_stock"`
+	Stocks         []storage.StockPlanItem `json:"stocks"`
+}
+
+func InvestPlanHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	userID, err := userIDFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	var req InvestPlanRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AmountPerStock <= 0 || len(req.Stocks) == 0 {
+		http.Error(w, "Некоректні параметри плану інвестування", http.StatusBadRequest)
+		return
+	}
+	count, total, err := store.InvestPlan(userID, req.AmountPerStock, req.Stocks)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":         "ok",
+		"invested_count": count,
+		"total_invested": total,
+	})
+}
+

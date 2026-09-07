@@ -1,0 +1,36 @@
+# Executables and binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Flutter & Android build artifacts
+client/build/
+client/.dart_tool/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+client/.packages
+client/pubspec.lock
+
+# Android specific
+client/android/.gradle/
+client/android/local.properties
+client/android/app/upload-keystore.jks
+client/android/key.properties
+
+# Secrets
+*.jks
+*.keystore
+
+# Store final assets (large binaries)
+store_assets/*.aab
+
+# OS files
+.DS_Store
+Thumbs.db

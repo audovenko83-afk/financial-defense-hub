@@ -1,0 +1,84 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#00FF94" stop-opacity="0.25" />
+      <stop offset="35%" stop-color="#00E5FF" stop-opacity="0.12" />
+      <stop offset="75%" stop-color="#0B0E14" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="sqBg" x1="50" y1="30" x2="460" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#151C2A" />
+      <stop offset="50%" stop-color="#0E1420" />
+      <stop offset="100%" stop-color="#06090E" />
+    </linearGradient>
+    <linearGradient id="sqBorder" x1="24" y1="24" x2="488" y2="488" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00FF94" stop-opacity="0.8" />
+      <stop offset="50%" stop-color="#00E5FF" stop-opacity="0.4" />
+      <stop offset="100%" stop-color="#0066FF" stop-opacity="0.2" />
+    </linearGradient>
+    <linearGradient id="shieldLeft" x1="150" y1="120" x2="256" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1E2A3E" />
+      <stop offset="100%" stop-color="#0D1420" />
+    </linearGradient>
+    <linearGradient id="shieldRight" x1="256" y1="120" x2="362" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#162030" />
+      <stop offset="100%" stop-color="#080D15" />
+    </linearGradient>
+    <linearGradient id="neonBorder" x1="145" y1="120" x2="365" y2="390" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00FF94" />
+      <stop offset="60%" stop-color="#00E5FF" />
+      <stop offset="100%" stop-color="#0088FF" />
+    </linearGradient>
+    <linearGradient id="trendGrad" x1="180" y1="320" x2="340" y2="160" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00E5FF" />
+      <stop offset="60%" stop-color="#00FF94" />
+      <stop offset="100%" stop-color="#FFFFFF" />
+    </linearGradient>
+    <linearGradient id="dollarGrad" x1="230" y1="175" x2="282" y2="315" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="40%" stop-color="#00FF94" />
+      <stop offset="100%" stop-color="#00D27F" />
+    </linearGradient>
+    <filter id="neon" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" fill="#0B0E14" />
+  <rect width="512" height="512" fill="url(#bgGlow)" />
+
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#sqBg)" stroke="url(#sqBorder)" stroke-width="3.5" />
+
+  <circle cx="256" cy="256" r="160" stroke="#00FF94" stroke-width="1" stroke-opacity="0.12" stroke-dasharray="6 6" />
+  <circle cx="256" cy="256" r="195" stroke="#00E5FF" stroke-width="1" stroke-opacity="0.08" stroke-dasharray="10 8" />
+
+  <path d="M 256 116 L 156 142 C 152 232, 172 322, 256 384 L 256 116 Z" fill="url(#shieldLeft)" />
+  <path d="M 256 116 L 356 142 C 360 232, 340 322, 256 384 L 256 116 Z" fill="url(#shieldRight)" />
+  <line x1="256" y1="116" x2="256" y2="384" stroke="#00FF94" stroke-width="1.5" stroke-opacity="0.3" />
+
+  <path d="M 256 116 L 356 142 C 360 232, 340 322, 256 384 C 172 322, 152 232, 148 142 Z" 
+        fill="none" stroke="url(#neonBorder)" stroke-width="5" stroke-linejoin="round" filter="url(#neon)" />
+
+  <path d="M 256 132 L 342 154 C 345 228, 328 304, 256 358 C 184 304, 167 228, 170 154 Z" 
+        fill="none" stroke="#00E5FF" stroke-width="1.2" stroke-opacity="0.25" />
+
+  <path d="M 182 315 L 222 280 L 258 295 L 302 220 L 338 178" 
+        fill="none" stroke="url(#trendGrad)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" filter="url(#neon)" />
+  <polygon points="340,165 352,185 330,183" fill="#00FF94" filter="url(#neon)" />
+
+  <circle cx="182" cy="315" r="4.5" fill="#00E5FF" />
+  <circle cx="222" cy="280" r="4.5" fill="#00E5FF" />
+  <circle cx="258" cy="295" r="4.5" fill="#00FF94" />
+  <circle cx="302" cy="220" r="5" fill="#00FF94" />
+  <circle cx="302" cy="220" r="9" stroke="#00FF94" stroke-width="1.5" stroke-opacity="0.6" />
+
+  <g filter="url(#neon)">
+    <rect x="252" y="180" width="8" height="136" rx="4" fill="url(#dollarGrad)" />
+    <path d="M 284 218 C 284 198, 272 192, 256 192 C 238 192, 226 202, 226 218 C 226 244, 286 242, 286 274 C 286 294, 272 304, 256 304 C 236 304, 224 292, 224 274" 
+          fill="none" stroke="url(#dollarGrad)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <g transform="translate(352, 162)">
+    <path d="M 0 -16 Q 0 0 16 0 Q 0 0 0 16 Q 0 0 -16 0 Q 0 0 0 -16 Z" fill="#FFFFFF" filter="url(#neon)" />
+  </g>
+</svg>
