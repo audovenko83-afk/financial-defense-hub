@@ -47,7 +47,7 @@ class ApiConfig {
     if (_envUrl.isNotEmpty) {
       return _envUrl;
     }
-    return 'http://127.0.0.1:8080/api';
+    return 'https://audovenko-mdw-apits.onrender.com/api';
   }
 
   static Future<void> setBaseUrl(String url) async {

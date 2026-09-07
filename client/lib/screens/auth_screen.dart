@@ -167,6 +167,11 @@ class _AuthScreenState extends State<AuthScreen> {
                     runSpacing: 6,
                     children: [
                       ActionChip(
+                        avatar: const Icon(Icons.cloud_done, size: 16, color: Color(0xFF00FF94)),
+                        label: const Text('Render Хмара'),
+                        onPressed: () => urlController.text = 'https://audovenko-mdw-apits.onrender.com/api',
+                      ),
+                      ActionChip(
                         label: const Text('127.0.0.1 (USB / ПК)'),
                         onPressed: () => urlController.text = 'http://127.0.0.1:8080/api',
                       ),

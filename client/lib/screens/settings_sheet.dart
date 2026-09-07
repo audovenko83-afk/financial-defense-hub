@@ -296,15 +296,19 @@ class _SettingsSheetState extends State<SettingsSheet> {
             Text(_pingResult, style: const TextStyle(fontSize: 12)),
           ],
           const SizedBox(height: 8),
-          Row(
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
             children: [
-              const Text('Пресети:', style: TextStyle(color: Colors.white38, fontSize: 11)),
-              const SizedBox(width: 8),
+              ActionChip(
+                avatar: const Icon(Icons.cloud_done, size: 14, color: Color(0xFF00FF94)),
+                label: const Text('Render Cloud', style: TextStyle(fontSize: 10)),
+                onPressed: () => _saveServerUrl('https://audovenko-mdw-apits.onrender.com/api'),
+              ),
               ActionChip(
                 label: const Text('127.0.0.1 (ADB)', style: TextStyle(fontSize: 10)),
                 onPressed: () => _saveServerUrl('http://127.0.0.1:8080/api'),
               ),
-              const SizedBox(width: 6),
               ActionChip(
                 label: const Text('192.168.0.7 (LAN)', style: TextStyle(fontSize: 10)),
                 onPressed: () => _saveServerUrl('http://192.168.0.7:8080/api'),
