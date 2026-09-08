@@ -30,6 +30,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   PortfolioData? _latestData;
   String _userEmail = '';
   DateTime? _lastBackPressTime;
+  bool _isHandlingUnauthorized = false;
+  bool _hasAttemptedIBKRAutoRestore = false;
 
   @override
   void initState() {
@@ -40,12 +42,16 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     _refreshData();
   }
 
-  void _handleUnauthorized() {
-    SessionStore.deleteToken();
+  Future<void> _handleUnauthorized() async {
+    if (_isHandlingUnauthorized) return;
+    _isHandlingUnauthorized = true;
+
+    await SessionStore.deleteToken();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         backgroundColor: Colors.orangeAccent,
+        duration: Duration(seconds: 4),
         content: Text(
           'Сесія завершилась або змінився сервер. Будь ласка, авторизуйтесь знову.',
           style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
@@ -61,6 +67,36 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     });
   }
 
+  Future<void> _tryAutoRestoreIBKRConfig() async {
+    final cached = await SessionStore.getCachedIBKRConfig();
+    if (cached != null && cached['flex_token'] != null && cached['query_id'] != null) {
+      try {
+        final saveRes = await http.post(
+          Uri.parse('${ApiConfig.baseUrl}/ibkr/config'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ${widget.token}',
+          },
+          body: jsonEncode({
+            'flex_token': cached['flex_token'],
+            'query_id': cached['query_id'],
+          }),
+        );
+        if (saveRes.statusCode == 200) {
+          await http.post(
+            Uri.parse('${ApiConfig.baseUrl}/portfolio/mode'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ${widget.token}',
+            },
+            body: jsonEncode({'mode': 'real'}),
+          );
+          _refreshData();
+        }
+      } catch (_) {}
+    }
+  }
+
   Future<PortfolioData> _fetchPortfolio() async {
     final res = await http.get(
       Uri.parse('${ApiConfig.baseUrl}/portfolio'),
@@ -69,6 +105,12 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     if (res.statusCode == 200) {
       final data = PortfolioData.fromJson(jsonDecode(res.body));
       if (mounted) setState(() => _latestData = data);
+
+      if (!data.ibkrConfigured && !_hasAttemptedIBKRAutoRestore) {
+        _hasAttemptedIBKRAutoRestore = true;
+        _tryAutoRestoreIBKRConfig();
+      }
+
       return data;
     }
     if (res.statusCode == 401) {

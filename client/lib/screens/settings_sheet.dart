@@ -354,6 +354,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
       if (queryId.isNotEmpty && queryId != 'DEMO') {
         await prefs.setString('ibkr_saved_query_id', queryId);
       }
+      await SessionStore.saveCachedIBKRConfig(token, queryId);
 
       final res = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/ibkr/config'),

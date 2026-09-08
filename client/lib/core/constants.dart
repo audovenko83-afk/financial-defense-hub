@@ -127,6 +127,33 @@ class SessionStore {
     }
   }
 
+  static const _ibkrTokenKey = 'ibkr_saved_token';
+  static const _ibkrQueryIdKey = 'ibkr_saved_query_id';
+
+  static Future<void> saveCachedIBKRConfig(String token, String queryId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (token.isNotEmpty && !token.contains('*') && token != 'DEMO_IBKR') {
+        await prefs.setString(_ibkrTokenKey, token);
+      }
+      if (queryId.isNotEmpty && queryId != 'DEMO') {
+        await prefs.setString(_ibkrQueryIdKey, queryId);
+      }
+    } catch (_) {}
+  }
+
+  static Future<Map<String, String>?> getCachedIBKRConfig() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString(_ibkrTokenKey);
+      final queryId = prefs.getString(_ibkrQueryIdKey);
+      if (token != null && token.isNotEmpty && queryId != null && queryId.isNotEmpty) {
+        return {'flex_token': token, 'query_id': queryId};
+      }
+    } catch (_) {}
+    return null;
+  }
+
   static Future<void> deleteToken() async {
     try {
       final prefs = await SharedPreferences.getInstance();

@@ -40,29 +40,68 @@ class _AuthScreenState extends State<AuthScreen> {
     final token = await SessionStore.readToken();
     if (!mounted) return;
 
-    if (token != null && token.isNotEmpty) {
-      _savedToken = token;
-      final isBioEnabled = await SessionStore.isBiometricsEnabled();
-
-      bool canCheck = false;
-      try {
-        canCheck = (await _localAuth.canCheckBiometrics) || (await _localAuth.isDeviceSupported());
-      } catch (_) {
-        canCheck = false;
+    if (token == null || token.trim().isEmpty) {
+      if (mounted) {
+        setState(() {
+          _savedToken = null;
+          _showBiometricUnlockButton = false;
+          isRestoringSession = false;
+        });
       }
+      return;
+    }
 
+    _savedToken = token;
+    final isBioEnabled = await SessionStore.isBiometricsEnabled();
+
+    bool canCheck = false;
+    try {
+      canCheck = (await _localAuth.canCheckBiometrics) || (await _localAuth.isDeviceSupported());
+    } catch (_) {
+      canCheck = false;
+    }
+
+    // Proactively verify the token with the server
+    bool isTokenValid = false;
+    try {
+      final res = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/portfolio'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (res.statusCode == 200) {
+        isTokenValid = true;
+      } else if (res.statusCode == 401) {
+        // Token is rejected by server (expired, DB reset, or changed server)
+        await SessionStore.deleteToken();
+        if (mounted) {
+          setState(() {
+            _savedToken = null;
+            _showBiometricUnlockButton = false;
+            isRestoringSession = false;
+            errorMessage = 'Попередня сесія завершилась або сервер було перезапущено.\nБудь ласка, увійдіть знову через Google або логін та пароль.';
+          });
+        }
+        return;
+      }
+    } catch (_) {
+      // Server might be sleeping (Render cold start) or device offline
+    }
+
+    if (!mounted) return;
+
+    if (isTokenValid) {
       if (isBioEnabled && canCheck) {
         final authenticated = await _authenticateBiometrics();
+        if (!mounted) return;
         if (authenticated) {
           _navigateToPortfolio(token);
           return;
         } else {
-          if (mounted) {
-            setState(() {
-              _showBiometricUnlockButton = true;
-              isRestoringSession = false;
-            });
-          }
+          setState(() {
+            _showBiometricUnlockButton = true;
+            isRestoringSession = false;
+          });
           return;
         }
       } else {
@@ -70,9 +109,52 @@ class _AuthScreenState extends State<AuthScreen> {
         return;
       }
     } else {
-      if (mounted) {
-        setState(() => isRestoringSession = false);
+      setState(() {
+        _showBiometricUnlockButton = (isBioEnabled && canCheck && _savedToken != null);
+        isRestoringSession = false;
+      });
+    }
+  }
+
+  Future<void> _handleBiometricUnlock() async {
+    final token = _savedToken;
+    if (token == null || token.isEmpty) return;
+
+    final authenticated = await _authenticateBiometrics();
+    if (!authenticated || !mounted) return;
+
+    setState(() => isLoading = true);
+    try {
+      final res = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/portfolio'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 7));
+
+      if (!mounted) return;
+
+      if (res.statusCode == 200) {
+        _navigateToPortfolio(token);
+        return;
+      } else if (res.statusCode == 401) {
+        await SessionStore.deleteToken();
+        setState(() {
+          _savedToken = null;
+          _showBiometricUnlockButton = false;
+          errorMessage = 'Сесія застаріла. Будь ласка, авторизуйтесь через Google або Email.';
+        });
+      } else {
+        setState(() {
+          errorMessage = 'Сервер тимчасово відповів з помилкою (код ${res.statusCode}). Спробуйте пізніше.';
+        });
       }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          errorMessage = 'Не вдалося перевірити сесію (можливо, сервер прокидається). Спробуйте ще раз або увійдіть заново.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => isLoading = false);
     }
   }
 
@@ -135,12 +217,17 @@ class _AuthScreenState extends State<AuthScreen> {
         );
       } else {
         setState(() {
+          final bodyMsg = utf8.decode(response.bodyBytes).trim();
           if (response.statusCode == 401) {
-            errorMessage = 'Невірна пошта або пароль.\nЯкщо у вас ще немає акаунту — натисніть «Створити профіль» нижче.';
+            if (bodyMsg.isNotEmpty && !bodyMsg.startsWith('<')) {
+              errorMessage = bodyMsg;
+            } else {
+              errorMessage = 'Невірна пошта або пароль.\nЯкщо ви раніше заходили через Google — скористайтеся кнопкою Google нижче.';
+            }
           } else if (response.statusCode == 409) {
-            errorMessage = 'Користувач із такою поштою вже існує. Натисніть «Увійти» нижче.';
+            errorMessage = 'Користувач із такою поштою вже існує.\nЯкщо ви реєструвалися через Google — натисніть кнопку Google нижче.';
           } else {
-            errorMessage = 'Помилка сервера: ${response.body}';
+            errorMessage = 'Помилка сервера: $bodyMsg';
           }
         });
       }
@@ -512,12 +599,7 @@ class _AuthScreenState extends State<AuthScreen> {
                         'Вхід за біометрією (Відбиток / Face ID)',
                         style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                       ),
-                      onPressed: () async {
-                        final auth = await _authenticateBiometrics();
-                        if (auth && _savedToken != null) {
-                          _navigateToPortfolio(_savedToken!);
-                        }
-                      },
+                      onPressed: isLoading ? null : _handleBiometricUnlock,
                     ),
                   ),
                 ],
