@@ -108,7 +108,7 @@ func (e *IBKRExchangeError) Error() string {
 func FriendlyIBKRExplanation(code, rawMsg string) string {
 	switch strings.TrimSpace(code) {
 	case "1001":
-		return "Сервери IBKR зараз формують звіт або діє інтервал повторних запитів (Rate Limit). Зачекайте кілька хвилин та спробуйте знову."
+		return "Сервери IBKR зараз формують звіт або діє інтервал повторних запитів (Rate Limit). Зачекайте 2–3 хвилини перед повторною спробою. Також переконайтеся, що в налаштуваннях звіту в кабінеті IBKR обрано період «Last 365 Calendar Days» (замість «Current Day», оскільки у свята та вихідні поточний звіт не формується)."
 	case "1003":
 		return "Служба Flex Web Service IBKR тимчасово недоступна. Будь ласка, спробуйте пізніше."
 	case "1004":
@@ -231,24 +231,6 @@ func (s *IBKRService) FetchFlexReport(token, queryID string) (*IBKRReportData, e
 			FriendlyMessage: "Не вдалося з'єднатися з серверами Interactive Brokers. Перевірте інтернет-з'єднання.",
 			HTTPStatus:      lastHTTPStatus,
 			DurationMs:      time.Since(start).Milliseconds(),
-		}
-	}
-
-	if initResp.ErrorCode == "1001" {
-		time.Sleep(3 * time.Second)
-		sendURL := fmt.Sprintf("%s/Universal/servlet/FlexStatementService.SendRequest?t=%s&q=%s&v=3", successBaseURL, token, queryID)
-		if req, err := http.NewRequest(http.MethodGet, sendURL, nil); err == nil {
-			req.Header.Set("User-Agent", "MillionDollarWay/1.0 (FinanceApp)")
-			if res, err := s.httpClient.Do(req); err == nil {
-				if bodyBytes, err := io.ReadAll(res.Body); err == nil {
-					var retryResp FlexStatementResponse
-					if err := xml.Unmarshal(bodyBytes, &retryResp); err == nil && (retryResp.Status == "Success" || retryResp.ErrorCode != "") {
-						initResp = retryResp
-						rawInitialXML = string(bodyBytes)
-					}
-				}
-				res.Body.Close()
-			}
 		}
 	}
 

@@ -35,7 +35,7 @@ class ApiConfig {
       final prefs = await SharedPreferences.getInstance();
       final saved = prefs.getString(_urlKey);
       if (saved != null && saved.trim().isNotEmpty) {
-        _customUrl = saved.trim();
+        _customUrl = _normalizeUrl(saved);
       }
     } catch (_) {}
   }
@@ -45,17 +45,28 @@ class ApiConfig {
       return _customUrl!;
     }
     if (_envUrl.isNotEmpty) {
-      return _envUrl;
+      return _normalizeUrl(_envUrl);
     }
     return 'https://audovenko-mdw-apits.onrender.com/api';
   }
 
   static Future<void> setBaseUrl(String url) async {
-    _customUrl = url.trim();
+    _customUrl = _normalizeUrl(url);
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_urlKey, _customUrl!);
     } catch (_) {}
+  }
+
+  static String _normalizeUrl(String url) {
+    var normalized = url.trim().replaceFirst(RegExp(r'/+$'), '');
+    while (normalized.endsWith('/api/api')) {
+      normalized = normalized.substring(0, normalized.length - 4);
+    }
+    if (!normalized.endsWith('/api')) {
+      normalized = '$normalized/api';
+    }
+    return normalized;
   }
 }
 
@@ -64,9 +75,7 @@ class SessionStore {
   static const _emailKey = 'user_email';
   static const _biometricsKey = 'biometrics_enabled';
 
-  static const List<String> adminEmails = [
-    'audovenko83@gmail.com',
-  ];
+  static const List<String> adminEmails = ['audovenko83@gmail.com'];
 
   static bool isAdmin(String? email) {
     if (email == null) return false;
@@ -129,5 +138,5 @@ class SessionStore {
 
 class IBKRDefaults {
   static const String defaultToken = '136314107001211183896714';
-  static const String defaultQueryId = '1351657';
+  static const String defaultQueryId = '1630618';
 }

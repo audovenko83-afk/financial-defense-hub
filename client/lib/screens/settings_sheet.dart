@@ -600,9 +600,15 @@ class _SettingsSheetState extends State<SettingsSheet> {
     await ApiConfig.setBaseUrl(url);
     _serverUrlCtrl.text = ApiConfig.baseUrl;
     _testPing();
+    await _loadPortfolioMode();
+    await _loadIBKRConfig();
+    widget.onPortfolioUpdated?.call();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(backgroundColor: Color(0xFF00FF94), content: Text('Адресу сервера оновлено!', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold))),
+        const SnackBar(
+          backgroundColor: Color(0xFF00FF94),
+          content: Text('Адресу сервера оновлено!', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+        ),
       );
     }
   }

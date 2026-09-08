@@ -19,7 +19,7 @@ import (
 const (
 	LegacyUserID       = "legacy"
 	DefaultIBKRToken   = "136314107001211183896714"
-	DefaultIBKRQueryID = "1351657"
+	DefaultIBKRQueryID = "1630618"
 	AdminEmail         = "audovenko83@gmail.com"
 )
 
@@ -323,7 +323,7 @@ func NewStorage(dbPath string) (*Storage, error) {
 		_, _ = db.Exec(`
 			INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
 			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-			ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
+			ON CONFLICT(user_id) DO NOTHING
 		`, adminUserID, DefaultIBKRToken, DefaultIBKRQueryID)
 		_, _ = db.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", adminUserID)
 	}
@@ -348,13 +348,13 @@ func (s *Storage) CreateUser(email string, password string) (User, error) {
 	// Initial cash for new users: $10,000 to allow realistic simulation immediately
 	_, _ = s.DB.Exec("INSERT OR REPLACE INTO portfolio_meta (key, value) VALUES (?, ?)", cashKey(user.ID), 10000.0)
 
-	// Автоматично налаштовуємо збережені IBKR облікові дані для адміністратора
+	// Автоматично налаштовуємо збережені IBKR облікові дані для адміністратора (тільки якщо ще не налаштовані)
 	if strings.EqualFold(email, AdminEmail) {
 		_, _ = s.DB.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", user.ID)
 		_, _ = s.DB.Exec(`
 			INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
 			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-			ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
+			ON CONFLICT(user_id) DO NOTHING
 		`, user.ID, DefaultIBKRToken, DefaultIBKRQueryID)
 	}
 
@@ -374,7 +374,7 @@ func (s *Storage) GetOrCreateOAuthUser(email string, provider string) (User, err
 			_, _ = s.DB.Exec(`
 				INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
 				VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-				ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
+				ON CONFLICT(user_id) DO NOTHING
 			`, user.ID, DefaultIBKRToken, DefaultIBKRQueryID)
 		}
 		return user, nil
@@ -400,7 +400,7 @@ func (s *Storage) GetOrCreateOAuthUser(email string, provider string) (User, err
 		_, _ = s.DB.Exec(`
 			INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
 			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-			ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
+			ON CONFLICT(user_id) DO NOTHING
 		`, user.ID, DefaultIBKRToken, DefaultIBKRQueryID)
 	}
 

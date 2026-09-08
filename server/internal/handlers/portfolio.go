@@ -74,6 +74,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": token, "email": user.Email})
 }
+
 type oauthRequest struct {
 	Email    string `json:"email"`
 	Name     string `json:"name"`
@@ -159,8 +160,6 @@ func DeleteAccountHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"deleted"}`))
 }
-
-
 
 func SimulateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -452,7 +451,6 @@ func InvestPlanHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-
 func isAdminEmail(email string) bool {
 	email = strings.ToLower(strings.TrimSpace(email))
 	return email == "audovenko83@gmail.com"
@@ -589,6 +587,16 @@ func SaveIBKRConfigHandler(w http.ResponseWriter, r *http.Request) {
 			"status":           "error",
 			"friendly_message": "Невірний запит налаштувань",
 			"error_code":       "INVALID_REQUEST",
+		})
+		return
+	}
+	if strings.TrimSpace(req.FlexToken) == "" && strings.TrimSpace(req.QueryID) == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":           "error",
+			"friendly_message": "Введіть Flex Token і Query ID у налаштуваннях IBKR.",
+			"error_code":       "MISSING_CREDENTIALS",
 		})
 		return
 	}
@@ -836,4 +844,3 @@ func AdminAuditLogsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"logs": logs})
 }
-

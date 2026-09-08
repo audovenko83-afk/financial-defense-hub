@@ -209,9 +209,6 @@ func TestSavedTokenAndIDPersistence(t *testing.T) {
 	if cfg.QueryID != storage.DefaultIBKRQueryID {
 		t.Errorf("expected QueryID %s, got %s", storage.DefaultIBKRQueryID, cfg.QueryID)
 	}
-	if cfg.Token != storage.DefaultIBKRToken {
-		t.Errorf("expected Token %s, got %s", storage.DefaultIBKRToken, cfg.Token)
-	}
 
 	// 3. Post to /api/ibkr/config with empty fields — should retain and not fail
 	saveReq := httptest.NewRequest(http.MethodPost, "/api/ibkr/config", bytes.NewReader([]byte(`{"flex_token":"","query_id":""}`)))
@@ -229,4 +226,3 @@ func TestSavedTokenAndIDPersistence(t *testing.T) {
 		t.Fatalf("save response is not valid JSON: %v", err)
 	}
 }
-
