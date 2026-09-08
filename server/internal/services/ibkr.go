@@ -106,21 +106,39 @@ func (e *IBKRExchangeError) Error() string {
 }
 
 func FriendlyIBKRExplanation(code, rawMsg string) string {
-	switch strings.TrimSpace(code) {
+	code = strings.TrimSpace(code)
+	lowerMsg := strings.ToLower(rawMsg)
+
+	// Перевірка текстового опису для точного розпізнавання
+	if strings.Contains(lowerMsg, "token has expired") || strings.Contains(lowerMsg, "token expired") {
+		return "Термін дії Flex токена закінчився (у кабінеті IBKR токен діє максимум 1 рік). Будь ласка, згенеруйте новий токен в особистому кабінеті Interactive Brokers (Performance & Reports ➔ Flex Queries ➔ Flex Web Service) та оновіть його в налаштуваннях."
+	}
+	if strings.Contains(lowerMsg, "too many failed attempts") {
+		return "Забагато невдалих спроб авторизації (код 1025). Оскільки використовувався прострочений або недійсний токен, сервери IBKR тимчасово призупинили доступ. Будь ласка, оновіть токен у кабінеті IBKR та зачекайте 15–30 хвилин перед наступною спробою."
+	}
+	if strings.Contains(lowerMsg, "not yet active") || strings.Contains(lowerMsg, "token is not active") {
+		return "Новий токен ще активується серверами Interactive Brokers. Зазвичай активація займає від кількох хвилин до кількох годин після створення в кабінеті IBKR."
+	}
+
+	switch code {
 	case "1001":
 		return "Сервери IBKR зараз формують звіт або діє інтервал повторних запитів (Rate Limit). Зачекайте 2–3 хвилини перед повторною спробою. Також переконайтеся, що в налаштуваннях звіту в кабінеті IBKR обрано період «Last 365 Calendar Days» (замість «Current Day», оскільки у свята та вихідні поточний звіт не формується)."
 	case "1003":
 		return "Служба Flex Web Service IBKR тимчасово недоступна. Будь ласка, спробуйте пізніше."
-	case "1004":
-		return "Перевищено ліміт частоти запитів до IBKR. Зачекайте 2–3 хвилини перед наступною спробою."
-	case "1005":
-		return "Доступ обмежено за IP-адресою у налаштуваннях вашого акаунта IBKR."
+	case "1004", "1005":
+		return "Перевищено ліміт частоти запитів до IBKR (Rate Limit). Зачекайте 2–3 хвилини перед наступною спробою."
 	case "1009":
-		return "Сервер IBKR відхилив запит через системну помилку. Спробуйте пізніше."
+		return "Сервер IBKR тимчасово недоступний або відхилив запит через системну помилку. Спробуйте пізніше."
+	case "1010":
+		return "Невірний цифровий токен Flex Query. Перевірте, чи правильно скопійовано токен з кабінету Interactive Brokers без пробілів."
+	case "1011":
+		return "Служба Flex Web Service не налаштована для вашого рахунку в IBKR. Перевірте налаштування в Performance & Reports ➔ Flex Queries."
 	case "1012":
-		return "Токен ще не активовано в системі Interactive Brokers. Зазвичай активація займає кілька хвилин після створення."
+		return "Термін дії Flex токена закінчився (у кабінеті IBKR токен діє максимум 1 рік). Будь ласка, згенеруйте новий токен в особистому кабінеті Interactive Brokers (Performance & Reports ➔ Flex Queries ➔ Flex Web Service) та оновіть його в налаштуваннях."
+	case "1013":
+		return "Токен щойно створено і він ще активується серверами Interactive Brokers (зазвичай 5–15 хвилин)."
 	case "1014":
-		return "Термін дії токена Flex Query закінчився (у кабінеті IBKR токен діє до 1 року). Згенеруйте новий токен у розділі Flex Web Service."
+		return "Звіт Flex Query не знайдено або термін дії токена минув. Перевірте Query ID та згенеруйте свіжий токен у розділі Flex Web Service в кабінеті IBKR."
 	case "1015":
 		return "Невірний цифровий токен Flex Query. Перевірте, чи правильно скопійовано всі цифри токена з кабінету IBKR без пробілів."
 	case "1016":
@@ -134,12 +152,12 @@ func FriendlyIBKRExplanation(code, rawMsg string) string {
 	case "1021":
 		return "Службу Flex Web Service не увімкнено. Активуйте перемикач Flex Web Service у кабінеті IBKR (Performance & Reports -> Flex Queries)."
 	case "1025":
-		return "Забагато частих запитів до IBKR. IBKR тимчасово призупинив запити для захисту від перевантаження (Rate Limit). Будь ласка, зачекайте 5–10 хвилин і спробуйте знову."
+		return "Забагато невдалих спроб авторизації (код 1025). Оскільки використовувався прострочений або недійсний токен, сервери IBKR тимчасово призупинили доступ. Будь ласка, оновіть токен у кабінеті IBKR та зачекайте 15–30 хвилин перед наступною спробою."
 	default:
-		if strings.Contains(strings.ToLower(rawMsg), "token") {
-			return "Помилка токена IBKR: " + rawMsg + ". Перевірте токен у кабінеті IBKR."
+		if strings.Contains(lowerMsg, "token") {
+			return "Помилка токена IBKR: " + rawMsg + ". Перевірте або оновіть токен у кабінеті IBKR."
 		}
-		if strings.Contains(strings.ToLower(rawMsg), "query") {
+		if strings.Contains(lowerMsg, "query") {
 			return "Помилка Query ID: " + rawMsg + ". Перевірте налаштування Flex Query."
 		}
 		if rawMsg != "" {

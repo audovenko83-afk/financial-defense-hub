@@ -189,30 +189,102 @@ class _IBKRConnectionResultDialogState extends State<IBKRConnectionResultDialog>
   }
 
   Widget _buildErrorTipsBlock() {
+    final res = widget.result;
+    final lowerFriendly = res.friendlyMessage.toLowerCase();
+    final lowerRaw = (res.errorMessage ?? '').toLowerCase();
+    final code = res.errorCode ?? '';
+
+    final isExpired = code == '1012' ||
+        lowerFriendly.contains('закінчився') ||
+        lowerFriendly.contains('простроч') ||
+        lowerRaw.contains('expired');
+
+    final isBlockedOrLimit = code == '1025' ||
+        code == '1004' ||
+        code == '1005' ||
+        lowerFriendly.contains('1025') ||
+        lowerRaw.contains('too many failed attempts');
+
+    final isPending = code == '1001' || code == '1016' || code == '1019';
+    final isInvalidQuery = code == '1018' || code == '1014';
+
+    String tipsTitle;
+    String tipsText;
+    IconData tipsIcon;
+    Color tipsColor;
+
+    if (isExpired) {
+      tipsIcon = Icons.access_time_filled_rounded;
+      tipsColor = const Color(0xFFFFB74D);
+      tipsTitle = 'Термін дії токена закінчився (код 1012):';
+      tipsText =
+          '1. В IBKR термін дії Flex токена обмежено брокером (до 1 року).\n'
+          '2. Увійдіть до кабінету на interactivebrokers.com.\n'
+          '3. Перейдіть: Performance & Reports ➔ Flex Queries ➔ Flex Web Service.\n'
+          '4. Згенеруйте новий Current Token та збережіть.\n'
+          '5. Вставте новий числовий токен у налаштування додатку.';
+    } else if (isBlockedOrLimit) {
+      tipsIcon = Icons.security_update_warning_rounded;
+      tipsColor = const Color(0xFFFF8A80);
+      tipsTitle = 'Забагато спроб / Тимчасовий блок (код 1025):';
+      tipsText =
+          '1. Оскільки старий токен був прострочений, IBKR тимчасово призупинив доступ.\n'
+          '2. Створіть новий активний токен у кабінеті IBKR.\n'
+          '3. Зачекайте 15–30 хвилин для скидання блокування серверів IBKR.\n'
+          '4. Спробуйте синхронізувати з новим токеном.';
+    } else if (isPending) {
+      tipsIcon = Icons.hourglass_top_rounded;
+      tipsColor = const Color(0xFF00E5FF);
+      tipsTitle = 'Сервери IBKR формують звіт:';
+      tipsText =
+          '1. Генерація Flex звіту на серверах IBKR триває від 30 сек до 2 хв.\n'
+          '2. Перевірте, чи у звіті стоїть період «Last 365 Days» замість «Current Day».\n'
+          '3. Зачекайте 1–2 хвилини і натисніть «Повторити».';
+    } else if (isInvalidQuery) {
+      tipsIcon = Icons.search_off_rounded;
+      tipsColor = const Color(0xFFFFD700);
+      tipsTitle = 'Не знайдено Query ID:';
+      tipsText =
+          '1. Перевірте список Flex Queries в особистому кабінеті IBKR.\n'
+          '2. Скопіюйте числовий ID саме того звіту, який містить Open Positions та Cash Report.\n'
+          '3. Переконайтеся, що сервіс Flex Web Service активний.';
+    } else {
+      tipsIcon = Icons.lightbulb_outline_rounded;
+      tipsColor = const Color(0xFFFFD700);
+      tipsTitle = 'Що потрібно перевірити:';
+      tipsText =
+          '1. Токен має містити виключно цифри без пробілів.\n'
+          '2. Перевірте, чи увімкнено Flex Web Service у кабінеті IBKR.\n'
+          '3. Перевірте Query ID у списку звітів Flex Queries.\n'
+          '4. Якщо звіт або токен створено щойно — зачекайте 2–5 хв для його активації.';
+    }
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.25),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: tipsColor.withValues(alpha: 0.35)),
       ),
-      child: const Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(Icons.lightbulb_outline_rounded, color: Color(0xFFFFD700), size: 16),
-              SizedBox(width: 6),
-              Text('Що потрібно перевірити:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Color(0xFFFFD700))),
+              Icon(tipsIcon, color: tipsColor, size: 16),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  tipsTitle,
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: tipsColor),
+                ),
+              ),
             ],
           ),
-          SizedBox(height: 8),
+          const SizedBox(height: 8),
           Text(
-            '1. Токен має складатися виключно з цифр.\n'
-            '2. Перевірте, чи увімкнено Flex Web Service у кабінеті IBKR.\n'
-            '3. Перевірте Query ID у списку звітів Flex Queries.\n'
-            '4. Якщо звіт створено щойно — зачекайте 1–2 хв і повторіть.',
-            style: TextStyle(color: Colors.white60, fontSize: 11, height: 1.4),
+            tipsText,
+            style: const TextStyle(color: Colors.white70, fontSize: 11, height: 1.45),
           ),
         ],
       ),
@@ -340,8 +412,19 @@ class _IBKRConnectionResultDialogState extends State<IBKRConnectionResultDialog>
             ),
           ],
         ),
+        if (widget.onOpenGuide != null) ...[
+          const SizedBox(height: 6),
+          TextButton.icon(
+            icon: const Icon(Icons.menu_book_rounded, size: 16, color: Color(0xFF00E5FF)),
+            label: const Text('Інструкція з отримання токена в IBKR', style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12)),
+            onPressed: () {
+              Navigator.pop(context);
+              widget.onOpenGuide?.call();
+            },
+          ),
+        ],
         if (widget.onTryDemo != null) ...[
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           TextButton.icon(
             icon: const Icon(Icons.play_circle_outline_rounded, size: 16, color: Color(0xFF00FF94)),
             label: const Text('Спробувати миттєвий тест (Demo IBKR)', style: TextStyle(color: Color(0xFF00FF94), fontSize: 12)),
