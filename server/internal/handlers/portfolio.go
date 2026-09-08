@@ -582,14 +582,32 @@ func SaveIBKRConfigHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req SaveIBKRConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.QueryID == "" {
-		http.Error(w, "Query ID є обов'язковим для збереження", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":           "error",
+			"friendly_message": "Невірний запит налаштувань",
+			"error_code":       "INVALID_REQUEST",
+		})
 		return
+	}
+	if req.QueryID == "" {
+		req.QueryID = storage.DefaultIBKRQueryID
+	}
+	if req.FlexToken == "" {
+		req.FlexToken = storage.DefaultIBKRToken
 	}
 
 	actualToken, err := store.SaveIBKRConnection(userID, req.FlexToken, req.QueryID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":           "error",
+			"friendly_message": "Помилка збереження: " + err.Error(),
+			"error_code":       "SAVE_ERROR",
+		})
 		return
 	}
 
@@ -644,7 +662,14 @@ func SaveIBKRConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := store.SaveIBKRSyncSuccess(userID, report.AccountID, report.Cash, report.Positions); err != nil {
 		store.SaveIBKRSyncFailure(userID, err)
-		http.Error(w, "Помилка збереження даних синхронізації: "+err.Error(), http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":           "error",
+			"friendly_message": "Помилка збереження даних синхронізації: " + err.Error(),
+			"error_code":       "DB_SAVE_ERROR",
+			"error_message":    err.Error(),
+		})
 		return
 	}
 
@@ -688,7 +713,14 @@ func SyncIBKRHandler(w http.ResponseWriter, r *http.Request) {
 
 	token, queryID, err := store.GetIBKRCredentials(userID)
 	if err != nil {
-		http.Error(w, "IBKR ще не налаштовано. Будь ласка, введіть Flex Token та Query ID у налаштуваннях.", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":           "error",
+			"friendly_message": "IBKR ще не налаштовано. Будь ласка, введіть Flex Token та Query ID у налаштуваннях.",
+			"error_code":       "NOT_CONFIGURED",
+			"error_message":    err.Error(),
+		})
 		return
 	}
 
@@ -742,7 +774,14 @@ func SyncIBKRHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := store.SaveIBKRSyncSuccess(userID, report.AccountID, report.Cash, report.Positions); err != nil {
 		store.SaveIBKRSyncFailure(userID, err)
-		http.Error(w, "Помилка збереження даних: "+err.Error(), http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":           "error",
+			"friendly_message": "Помилка збереження даних: " + err.Error(),
+			"error_code":       "DB_SAVE_ERROR",
+			"error_message":    err.Error(),
+		})
 		return
 	}
 

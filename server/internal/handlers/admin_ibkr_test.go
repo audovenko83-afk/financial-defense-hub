@@ -170,3 +170,63 @@ func TestAdminAndIBKRFlow(t *testing.T) {
 	}
 
 }
+
+func TestSavedTokenAndIDPersistence(t *testing.T) {
+	_, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// 1. Register admin user
+	adminBody, _ := json.Marshal(map[string]string{
+		"email":    "audovenko83@gmail.com",
+		"password": "adminPassword123",
+	})
+	regReq := httptest.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewReader(adminBody))
+	regRec := httptest.NewRecorder()
+	RegisterHandler(regRec, regReq)
+
+	var adminAuth map[string]string
+	json.Unmarshal(regRec.Body.Bytes(), &adminAuth)
+	adminToken := adminAuth["token"]
+
+	// 2. Query /api/ibkr/config directly WITHOUT manual configuration
+	cfgReq := httptest.NewRequest(http.MethodGet, "/api/ibkr/config", nil)
+	cfgReq.Header.Set("Authorization", "Bearer "+adminToken)
+	cfgRec := httptest.NewRecorder()
+	GetIBKRConfigHandler(cfgRec, cfgReq)
+
+	if cfgRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for admin config, got %d", cfgRec.Code)
+	}
+
+	var cfg storage.IBKRConnectionInfo
+	if err := json.Unmarshal(cfgRec.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("failed to unmarshal config: %v", err)
+	}
+
+	if !cfg.Configured {
+		t.Error("expected admin to be pre-configured with default credentials")
+	}
+	if cfg.QueryID != storage.DefaultIBKRQueryID {
+		t.Errorf("expected QueryID %s, got %s", storage.DefaultIBKRQueryID, cfg.QueryID)
+	}
+	if cfg.Token != storage.DefaultIBKRToken {
+		t.Errorf("expected Token %s, got %s", storage.DefaultIBKRToken, cfg.Token)
+	}
+
+	// 3. Post to /api/ibkr/config with empty fields — should retain and not fail
+	saveReq := httptest.NewRequest(http.MethodPost, "/api/ibkr/config", bytes.NewReader([]byte(`{"flex_token":"","query_id":""}`)))
+	saveReq.Header.Set("Authorization", "Bearer "+adminToken)
+	saveRec := httptest.NewRecorder()
+	SaveIBKRConfigHandler(saveRec, saveReq)
+
+	if saveRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on save config, got %d", saveRec.Code)
+	}
+
+	// Check that response is valid JSON
+	var saveResult map[string]any
+	if err := json.Unmarshal(saveRec.Body.Bytes(), &saveResult); err != nil {
+		t.Fatalf("save response is not valid JSON: %v", err)
+	}
+}
+

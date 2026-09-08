@@ -102,12 +102,14 @@ class _SettingsSheetState extends State<SettingsSheet> {
 
   Future<void> _loadIBKRConfig() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final localSavedToken = prefs.getString('ibkr_saved_token') ?? '';
+      final localSavedQueryId = prefs.getString('ibkr_saved_query_id') ?? '';
+
       final res = await http.get(
         Uri.parse('${ApiConfig.baseUrl}/ibkr/config'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      final prefs = await SharedPreferences.getInstance();
-      final localSavedToken = prefs.getString('ibkr_saved_token') ?? '';
 
       if (res.statusCode == 200) {
         final data = jsonDecode(utf8.decode(res.bodyBytes));
@@ -115,23 +117,45 @@ class _SettingsSheetState extends State<SettingsSheet> {
         if (mounted) {
           setState(() {
             _ibkrConfig = cfg;
-            if (cfg.queryId.isNotEmpty && _queryIdCtrl.text.isEmpty) {
-              _queryIdCtrl.text = cfg.queryId;
-            }
-            if (cfg.token.isNotEmpty) {
-              _flexTokenCtrl.text = cfg.token;
-              prefs.setString('ibkr_saved_token', cfg.token);
-            } else if (localSavedToken.isNotEmpty && _flexTokenCtrl.text.isEmpty) {
-              _flexTokenCtrl.text = localSavedToken;
-            }
+
+            final effectiveQueryId = cfg.queryId.isNotEmpty
+                ? cfg.queryId
+                : (localSavedQueryId.isNotEmpty ? localSavedQueryId : IBKRDefaults.defaultQueryId);
+            _queryIdCtrl.text = effectiveQueryId;
+            prefs.setString('ibkr_saved_query_id', effectiveQueryId);
+
+            final effectiveToken = cfg.token.isNotEmpty
+                ? cfg.token
+                : (localSavedToken.isNotEmpty ? localSavedToken : IBKRDefaults.defaultToken);
+            _flexTokenCtrl.text = effectiveToken;
+            prefs.setString('ibkr_saved_token', effectiveToken);
           });
         }
-      } else if (localSavedToken.isNotEmpty && _flexTokenCtrl.text.isEmpty) {
+      } else {
         if (mounted) {
-          setState(() => _flexTokenCtrl.text = localSavedToken);
+          setState(() {
+            final effectiveQueryId = localSavedQueryId.isNotEmpty ? localSavedQueryId : IBKRDefaults.defaultQueryId;
+            _queryIdCtrl.text = effectiveQueryId;
+            final effectiveToken = localSavedToken.isNotEmpty ? localSavedToken : IBKRDefaults.defaultToken;
+            _flexTokenCtrl.text = effectiveToken;
+          });
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final localSavedToken = prefs.getString('ibkr_saved_token') ?? '';
+        final localSavedQueryId = prefs.getString('ibkr_saved_query_id') ?? '';
+        if (mounted) {
+          setState(() {
+            final effectiveQueryId = localSavedQueryId.isNotEmpty ? localSavedQueryId : IBKRDefaults.defaultQueryId;
+            _queryIdCtrl.text = effectiveQueryId;
+            final effectiveToken = localSavedToken.isNotEmpty ? localSavedToken : IBKRDefaults.defaultToken;
+            _flexTokenCtrl.text = effectiveToken;
+          });
+        }
+      } catch (_) {}
+    }
   }
 
   Future<void> _loadAdminStats() async {
@@ -306,26 +330,29 @@ class _SettingsSheetState extends State<SettingsSheet> {
     }
   }
   Future<void> _saveIBKRConfig() async {
-    final token = _flexTokenCtrl.text.trim();
-    final queryId = _queryIdCtrl.text.trim();
+    final prefs = await SharedPreferences.getInstance();
+    final localSavedToken = prefs.getString('ibkr_saved_token') ?? '';
+    final localSavedQueryId = prefs.getString('ibkr_saved_query_id') ?? '';
+
+    String token = _flexTokenCtrl.text.trim();
+    String queryId = _queryIdCtrl.text.trim();
+
     if (queryId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(backgroundColor: Colors.redAccent, content: Text('Введіть цифровий Query ID звіту')),
-      );
-      return;
+      queryId = localSavedQueryId.isNotEmpty ? localSavedQueryId : IBKRDefaults.defaultQueryId;
+      _queryIdCtrl.text = queryId;
     }
-    if (token.isEmpty && _ibkrConfig?.configured != true) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(backgroundColor: Colors.redAccent, content: Text('Введіть числовий токен Flex Query')),
-      );
-      return;
+    if (token.isEmpty || token.contains('*')) {
+      token = localSavedToken.isNotEmpty ? localSavedToken : IBKRDefaults.defaultToken;
+      _flexTokenCtrl.text = token;
     }
 
     setState(() => _isSavingIBKR = true);
     try {
-      final prefs = await SharedPreferences.getInstance();
-      if (token.isNotEmpty && !token.contains('*')) {
+      if (token.isNotEmpty && !token.contains('*') && token != 'DEMO_IBKR') {
         await prefs.setString('ibkr_saved_token', token);
+      }
+      if (queryId.isNotEmpty && queryId != 'DEMO') {
+        await prefs.setString('ibkr_saved_query_id', queryId);
       }
 
       final res = await http.post(
@@ -336,8 +363,22 @@ class _SettingsSheetState extends State<SettingsSheet> {
         },
         body: jsonEncode({'flex_token': token, 'query_id': queryId}),
       );
-      final body = jsonDecode(utf8.decode(res.bodyBytes));
-      final result = IBKRResult.fromJson(body);
+
+      IBKRResult result;
+      try {
+        final body = jsonDecode(utf8.decode(res.bodyBytes));
+        result = IBKRResult.fromJson(body);
+      } catch (_) {
+        result = IBKRResult(
+          isSuccess: res.statusCode == 200,
+          status: res.statusCode == 200 ? 'ok' : 'error',
+          accountId: _ibkrConfig?.accountId ?? '',
+          positionsCount: 0,
+          cash: 0,
+          friendlyMessage: utf8.decode(res.bodyBytes),
+          errorMessage: utf8.decode(res.bodyBytes),
+        );
+      }
 
       await _loadIBKRConfig();
       widget.onPortfolioUpdated?.call();
@@ -384,8 +425,22 @@ class _SettingsSheetState extends State<SettingsSheet> {
         Uri.parse('${ApiConfig.baseUrl}/ibkr/sync'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      final body = jsonDecode(utf8.decode(res.bodyBytes));
-      final result = IBKRResult.fromJson(body);
+
+      IBKRResult result;
+      try {
+        final body = jsonDecode(utf8.decode(res.bodyBytes));
+        result = IBKRResult.fromJson(body);
+      } catch (_) {
+        result = IBKRResult(
+          isSuccess: res.statusCode == 200,
+          status: res.statusCode == 200 ? 'ok' : 'error',
+          accountId: _ibkrConfig?.accountId ?? '',
+          positionsCount: 0,
+          cash: 0,
+          friendlyMessage: utf8.decode(res.bodyBytes),
+          errorMessage: utf8.decode(res.bodyBytes),
+        );
+      }
 
       await _loadIBKRConfig();
       widget.onPortfolioUpdated?.call();

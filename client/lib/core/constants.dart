@@ -126,3 +126,8 @@ class SessionStore {
     } catch (_) {}
   }
 }
+
+class IBKRDefaults {
+  static const String defaultToken = '136314107001211183896714';
+  static const String defaultQueryId = '1351657';
+}

@@ -253,8 +253,21 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         },
         body: jsonEncode({'flex_token': 'DEMO_IBKR', 'query_id': 'DEMO'}),
       );
-      final body = jsonDecode(utf8.decode(res.bodyBytes));
-      final result = IBKRResult.fromJson(body);
+      IBKRResult result;
+      try {
+        final body = jsonDecode(utf8.decode(res.bodyBytes));
+        result = IBKRResult.fromJson(body);
+      } catch (_) {
+        result = IBKRResult(
+          isSuccess: res.statusCode == 200,
+          status: res.statusCode == 200 ? 'ok' : 'error',
+          accountId: '',
+          positionsCount: 0,
+          cash: 0,
+          friendlyMessage: utf8.decode(res.bodyBytes),
+          errorMessage: utf8.decode(res.bodyBytes),
+        );
+      }
 
       // Set mode to real
       await http.post(
@@ -292,8 +305,21 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         Uri.parse('${ApiConfig.baseUrl}/ibkr/sync'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
       );
-      final body = jsonDecode(utf8.decode(res.bodyBytes));
-      final result = IBKRResult.fromJson(body);
+      IBKRResult result;
+      try {
+        final body = jsonDecode(utf8.decode(res.bodyBytes));
+        result = IBKRResult.fromJson(body);
+      } catch (_) {
+        result = IBKRResult(
+          isSuccess: res.statusCode == 200,
+          status: res.statusCode == 200 ? 'ok' : 'error',
+          accountId: _latestData?.ibkrAccountId ?? '',
+          positionsCount: 0,
+          cash: 0,
+          friendlyMessage: utf8.decode(res.bodyBytes),
+          errorMessage: utf8.decode(res.bodyBytes),
+        );
+      }
       _refreshData();
 
       if (mounted) {

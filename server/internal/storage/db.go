@@ -16,7 +16,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const LegacyUserID = "legacy"
+const (
+	LegacyUserID       = "legacy"
+	DefaultIBKRToken   = "136314107001211183896714"
+	DefaultIBKRQueryID = "1351657"
+	AdminEmail         = "audovenko83@gmail.com"
+)
 
 type Storage struct {
 	DB *sql.DB
@@ -304,6 +309,25 @@ func NewStorage(dbPath string) (*Storage, error) {
 		db.Exec("INSERT INTO portfolio_meta (key, value) VALUES ('cash', 10000.0)")
 	}
 
+	// Завжди зберігаємо дефолтні IBKR токен та Query ID для legacy
+	_, _ = db.Exec(`
+		INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
+	`, LegacyUserID, DefaultIBKRToken, DefaultIBKRQueryID)
+
+	// Якщо вже є адміністратор, автоматично підв'язуємо йому збережений токен та ID
+	var adminUserID string
+	err = db.QueryRow("SELECT id FROM users WHERE LOWER(email) = ?", strings.ToLower(AdminEmail)).Scan(&adminUserID)
+	if err == nil && adminUserID != "" {
+		_, _ = db.Exec(`
+			INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
+			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
+		`, adminUserID, DefaultIBKRToken, DefaultIBKRQueryID)
+		_, _ = db.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", adminUserID)
+	}
+
 	return &Storage{DB: db}, nil
 }
 
@@ -323,6 +347,17 @@ func (s *Storage) CreateUser(email string, password string) (User, error) {
 	}
 	// Initial cash for new users: $10,000 to allow realistic simulation immediately
 	_, _ = s.DB.Exec("INSERT OR REPLACE INTO portfolio_meta (key, value) VALUES (?, ?)", cashKey(user.ID), 10000.0)
+
+	// Автоматично налаштовуємо збережені IBKR облікові дані для адміністратора
+	if strings.EqualFold(email, AdminEmail) {
+		_, _ = s.DB.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", user.ID)
+		_, _ = s.DB.Exec(`
+			INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
+			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
+		`, user.ID, DefaultIBKRToken, DefaultIBKRQueryID)
+	}
+
 	return user, nil
 }
 func (s *Storage) GetOrCreateOAuthUser(email string, provider string) (User, error) {
@@ -334,6 +369,14 @@ func (s *Storage) GetOrCreateOAuthUser(email string, provider string) (User, err
 	var user User
 	err := s.DB.QueryRow("SELECT id, email, password_hash FROM users WHERE email = ?", email).Scan(&user.ID, &user.Email, &user.PasswordHash)
 	if err == nil {
+		if strings.EqualFold(email, AdminEmail) {
+			_, _ = s.DB.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", user.ID)
+			_, _ = s.DB.Exec(`
+				INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
+				VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+				ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
+			`, user.ID, DefaultIBKRToken, DefaultIBKRQueryID)
+		}
 		return user, nil
 	}
 
@@ -351,6 +394,16 @@ func (s *Storage) GetOrCreateOAuthUser(email string, provider string) (User, err
 		return User{}, err
 	}
 	_, _ = s.DB.Exec("INSERT OR REPLACE INTO portfolio_meta (key, value) VALUES (?, ?)", cashKey(user.ID), 10000.0)
+
+	if strings.EqualFold(email, AdminEmail) {
+		_, _ = s.DB.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", user.ID)
+		_, _ = s.DB.Exec(`
+			INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
+			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
+		`, user.ID, DefaultIBKRToken, DefaultIBKRQueryID)
+	}
+
 	return user, nil
 }
 
@@ -715,6 +768,14 @@ func (s *Storage) GetPortfolio(userID string) (PortfolioData, error) {
 		FROM ibkr_connections WHERE user_id = ?
 	`, userID).Scan(&ibkrConfigured, &ibkrLastSyncAt, &ibkrAccountID)
 
+	if !ibkrConfigured {
+		userEmail, _ := s.GetUserEmail(userID)
+		if userID == LegacyUserID || strings.EqualFold(userEmail, AdminEmail) {
+			_, _ = s.SaveIBKRConnection(userID, DefaultIBKRToken, DefaultIBKRQueryID)
+			ibkrConfigured = true
+		}
+	}
+
 	if mode == "real" {
 		var cash float64
 		_ = s.DB.QueryRow("SELECT value FROM ibkr_meta WHERE key = ?", cashKey(userID)).Scan(&cash)
@@ -998,6 +1059,16 @@ func (s *Storage) GetIBKRConnection(userID string) (IBKRConnectionInfo, error) {
 		FROM ibkr_connections WHERE user_id = ?
 	`, userID).Scan(&token, &queryID, &lastSync, &status, &errStr, &accID)
 
+	if err != nil || queryID == "" || token == "" {
+		userEmail, _ := s.GetUserEmail(userID)
+		if userID == LegacyUserID || strings.EqualFold(userEmail, AdminEmail) {
+			token = DefaultIBKRToken
+			queryID = DefaultIBKRQueryID
+			_, _ = s.SaveIBKRConnection(userID, token, queryID)
+			err = nil
+		}
+	}
+
 	if err == nil && queryID != "" {
 		info.Configured = true
 		info.QueryID = queryID
@@ -1020,7 +1091,7 @@ func (s *Storage) SaveIBKRConnection(userID, token, queryID string) (string, err
 	token = strings.TrimSpace(token)
 	queryID = strings.TrimSpace(queryID)
 	if queryID == "" {
-		return "", errors.New("Query ID не може бути порожнім")
+		queryID = DefaultIBKRQueryID
 	}
 	if token == "" || strings.Contains(token, "*") {
 		var existingToken string
@@ -1028,7 +1099,7 @@ func (s *Storage) SaveIBKRConnection(userID, token, queryID string) (string, err
 		if existingToken != "" {
 			token = existingToken
 		} else {
-			return "", errors.New("Flex Token не може бути порожнім")
+			token = DefaultIBKRToken
 		}
 	}
 	_, err := s.DB.Exec(`
@@ -1045,7 +1116,14 @@ func (s *Storage) SaveIBKRConnection(userID, token, queryID string) (string, err
 func (s *Storage) GetIBKRCredentials(userID string) (string, string, error) {
 	var token, queryID string
 	err := s.DB.QueryRow("SELECT flex_token, query_id FROM ibkr_connections WHERE user_id = ?", userID).Scan(&token, &queryID)
-	if err != nil {
+	if err != nil || token == "" || queryID == "" {
+		userEmail, _ := s.GetUserEmail(userID)
+		if userID == LegacyUserID || strings.EqualFold(userEmail, AdminEmail) {
+			token = DefaultIBKRToken
+			queryID = DefaultIBKRQueryID
+			_, _ = s.SaveIBKRConnection(userID, token, queryID)
+			return token, queryID, nil
+		}
 		return "", "", errors.New("IBKR ще не налаштовано для цього користувача")
 	}
 	return token, queryID, nil
