@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:google_sign_in/google_sign_in.dart';
 
@@ -28,6 +29,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   late Future<PortfolioData> _portfolioFuture;
   PortfolioData? _latestData;
   String _userEmail = '';
+  DateTime? _lastBackPressTime;
 
   @override
   void initState() {
@@ -36,6 +38,21 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       if (mounted) setState(() => _userEmail = em ?? '');
     });
     _refreshData();
+  }
+
+  void _handleUnauthorized() {
+    SessionStore.deleteToken();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        backgroundColor: Colors.orangeAccent,
+        content: Text(
+          'Сесія завершилась або змінився сервер. Будь ласка, авторизуйтесь знову.',
+          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+        ),
+      ),
+    );
+    Navigator.pushNamedAndRemoveUntil(context, '/auth', (_) => false);
   }
 
   void _refreshData() {
@@ -53,6 +70,10 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       final data = PortfolioData.fromJson(jsonDecode(res.body));
       if (mounted) setState(() => _latestData = data);
       return data;
+    }
+    if (res.statusCode == 401) {
+      _handleUnauthorized();
+      throw Exception('Сесія завершилась (код 401)');
     }
     throw Exception('Помилка завантаження даних (код ${res.statusCode})');
   }
@@ -661,98 +682,132 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0B0E14),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0B0E14),
-        elevation: 0,
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [Color(0xFF00FF94), Color(0xFF00E5FF)]),
-                borderRadius: BorderRadius.circular(12),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (_selectedTabIndex != 0) {
+          setState(() => _selectedTabIndex = 0);
+          return;
+        }
+        final now = DateTime.now();
+        if (_lastBackPressTime == null || now.difference(_lastBackPressTime!) > const Duration(seconds: 2)) {
+          _lastBackPressTime = now;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: const Color(0xFF1E2433),
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: const BorderSide(color: Colors.white12),
               ),
-              child: const Icon(Icons.shield_rounded, color: Colors.black, size: 20),
+              content: const Text(
+                'Натисніть назад ще раз для виходу з програми',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+              duration: const Duration(seconds: 2),
             ),
-            const SizedBox(width: 10),
-            const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(AppStrings.appTitle, style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
-                Text(AppStrings.appSubtitle, style: TextStyle(color: Color(0xFF00FF94), fontSize: 11, fontWeight: FontWeight.bold)),
-              ],
+          );
+          return;
+        }
+        SystemNavigator.pop();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0B0E14),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF0B0E14),
+          elevation: 0,
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(colors: [Color(0xFF00FF94), Color(0xFF00E5FF)]),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(Icons.shield_rounded, color: Colors.black, size: 20),
+              ),
+              const SizedBox(width: 10),
+              const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(AppStrings.appTitle, style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16)),
+                  Text(AppStrings.appSubtitle, style: TextStyle(color: Color(0xFF00FF94), fontSize: 11, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            IconButton(
+              tooltip: 'Поповнити кеш',
+              icon: const Icon(Icons.add_circle_outline_rounded, color: Color(0xFF00FF94)),
+              onPressed: _showDepositDialog,
+            ),
+            IconButton(
+              tooltip: 'Меню та налаштування',
+              icon: const Icon(Icons.tune_rounded, color: Colors.white),
+              onPressed: _openSettings,
             ),
           ],
         ),
-        actions: [
-          IconButton(
-            tooltip: 'Поповнити кеш',
-            icon: const Icon(Icons.add_circle_outline_rounded, color: Color(0xFF00FF94)),
-            onPressed: _showDepositDialog,
-          ),
-          IconButton(
-            tooltip: 'Меню та налаштування',
-            icon: const Icon(Icons.tune_rounded, color: Colors.white),
-            onPressed: _openSettings,
-          ),
-        ],
-      ),
-      body: IndexedStack(
-        index: _selectedTabIndex,
-        children: [
-          _buildHomeFutureBody(),
-          StrategyScreen(
-            token: widget.token,
-            portfolioData: _latestData,
-            onRefreshPortfolio: _refreshData,
-          ),
-          SimulatorScreen(
-            token: widget.token,
-            isTab: true,
-          ),
-          HistoryScreen(
-            token: widget.token,
-            isTab: true,
-          ),
-        ],
-      ),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF121622),
-          border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.06))),
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _selectedTabIndex,
-          onTap: (i) => setState(() => _selectedTabIndex = i),
-          backgroundColor: const Color(0xFF121622),
-          selectedItemColor: const Color(0xFF00FF94),
-          unselectedItemColor: const Color(0xFF64748B),
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
-          unselectedLabelStyle: const TextStyle(fontSize: 10),
-          items: const [
-            BottomNavigationBarItem(
-              icon: Icon(Icons.account_balance_wallet_outlined),
-              activeIcon: Icon(Icons.account_balance_wallet_rounded),
-              label: 'Портфель',
+        body: IndexedStack(
+          index: _selectedTabIndex,
+          children: [
+            _buildHomeFutureBody(),
+            StrategyScreen(
+              token: widget.token,
+              portfolioData: _latestData,
+              onRefreshPortfolio: _refreshData,
+              onUnauthorized: _handleUnauthorized,
             ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.track_changes_outlined),
-              activeIcon: Icon(Icons.track_changes_rounded),
-              label: 'Стратегія 40',
+            SimulatorScreen(
+              token: widget.token,
+              isTab: true,
+              onUnauthorized: _handleUnauthorized,
             ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.auto_graph_outlined),
-              activeIcon: Icon(Icons.auto_graph_rounded),
-              label: 'Аналітика',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.history_rounded),
-              activeIcon: Icon(Icons.history_rounded),
-              label: 'Історія',
+            HistoryScreen(
+              token: widget.token,
+              isTab: true,
+              onUnauthorized: _handleUnauthorized,
             ),
           ],
+        ),
+        bottomNavigationBar: Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF121622),
+            border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.06))),
+          ),
+          child: BottomNavigationBar(
+            currentIndex: _selectedTabIndex,
+            onTap: (i) => setState(() => _selectedTabIndex = i),
+            backgroundColor: const Color(0xFF121622),
+            selectedItemColor: const Color(0xFF00FF94),
+            unselectedItemColor: const Color(0xFF64748B),
+            selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11),
+            unselectedLabelStyle: const TextStyle(fontSize: 10),
+            items: const [
+              BottomNavigationBarItem(
+                icon: Icon(Icons.account_balance_wallet_outlined),
+                activeIcon: Icon(Icons.account_balance_wallet_rounded),
+                label: 'Портфель',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.track_changes_outlined),
+                activeIcon: Icon(Icons.track_changes_rounded),
+                label: 'Стратегія 40',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.auto_graph_outlined),
+                activeIcon: Icon(Icons.auto_graph_rounded),
+                label: 'Аналітика',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.history_rounded),
+                activeIcon: Icon(Icons.history_rounded),
+                label: 'Історія',
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -9,8 +9,9 @@ import '../widgets/info_helper_sheet.dart';
 class SimulatorScreen extends StatefulWidget {
   final String token;
   final bool isTab;
+  final VoidCallback? onUnauthorized;
 
-  const SimulatorScreen({super.key, required this.token, this.isTab = false});
+  const SimulatorScreen({super.key, required this.token, this.isTab = false, this.onUnauthorized});
 
   @override
   State<SimulatorScreen> createState() => _SimulatorScreenState();
@@ -72,6 +73,8 @@ class _SimulatorScreenState extends State<SimulatorScreen> {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         setState(() => scenarios = data['scenarios'] as List? ?? []);
+      } else if (res.statusCode == 401) {
+        widget.onUnauthorized?.call();
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Помилка: $e')));

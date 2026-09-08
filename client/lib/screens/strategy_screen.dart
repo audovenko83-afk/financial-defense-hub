@@ -12,12 +12,14 @@ class StrategyScreen extends StatefulWidget {
   final String token;
   final PortfolioData? portfolioData;
   final VoidCallback onRefreshPortfolio;
+  final VoidCallback? onUnauthorized;
 
   const StrategyScreen({
     super.key,
     required this.token,
     required this.portfolioData,
     required this.onRefreshPortfolio,
+    this.onUnauthorized,
   });
 
   @override
@@ -146,6 +148,9 @@ class _StrategyScreenState extends State<StrategyScreen> {
             ),
           );
         }
+      } else if (res.statusCode == 401) {
+        widget.onUnauthorized?.call();
+        return;
       } else {
         throw Exception(res.body);
       }
@@ -342,6 +347,7 @@ class _StrategyScreenState extends State<StrategyScreen> {
               description: stock.description,
               ownedPosition: pos,
               onPortfolioUpdated: widget.onRefreshPortfolio,
+              onUnauthorized: widget.onUnauthorized,
             );
           },
           child: Padding(

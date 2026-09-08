@@ -17,6 +17,8 @@ class StockDetailSheet extends StatefulWidget {
   final Position? ownedPosition;
   final VoidCallback onPortfolioUpdated;
 
+  final VoidCallback? onUnauthorized;
+
   const StockDetailSheet({
     super.key,
     required this.token,
@@ -27,6 +29,7 @@ class StockDetailSheet extends StatefulWidget {
     required this.description,
     this.ownedPosition,
     required this.onPortfolioUpdated,
+    this.onUnauthorized,
   });
 
   static void show(
@@ -39,6 +42,7 @@ class StockDetailSheet extends StatefulWidget {
     required String description,
     Position? ownedPosition,
     required VoidCallback onPortfolioUpdated,
+    VoidCallback? onUnauthorized,
   }) {
     showModalBottomSheet(
       context: context,
@@ -53,6 +57,7 @@ class StockDetailSheet extends StatefulWidget {
         description: description,
         ownedPosition: ownedPosition,
         onPortfolioUpdated: onPortfolioUpdated,
+        onUnauthorized: onUnauthorized,
       ),
     );
   }
@@ -227,15 +232,26 @@ class _StockDetailSheetState extends State<StockDetailSheet> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Center(
-              child: Container(
-                width: 44,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.white24,
-                  borderRadius: BorderRadius.circular(2),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const SizedBox(width: 40),
+                Container(
+                  width: 44,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
-              ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 22),
+                  onPressed: () => Navigator.pop(context),
+                  tooltip: 'Закрити',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
             Row(

@@ -6,8 +6,9 @@ import '../core/constants.dart';
 class HistoryScreen extends StatefulWidget {
   final String token;
   final bool isTab;
+  final VoidCallback? onUnauthorized;
 
-  const HistoryScreen({super.key, required this.token, this.isTab = false});
+  const HistoryScreen({super.key, required this.token, this.isTab = false, this.onUnauthorized});
 
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
@@ -21,6 +22,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
   void initState() {
     super.initState();
     _refresh();
+  }
+
+  @override
+  void didUpdateWidget(covariant HistoryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.token != widget.token) {
+      _refresh();
+    }
   }
 
   void _refresh() {
@@ -37,6 +46,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
     if (res.statusCode == 200) {
       final data = jsonDecode(res.body);
       return data is List ? data : [];
+    }
+    if (res.statusCode == 401) {
+      widget.onUnauthorized?.call();
+      throw Exception('Сесія закінчилась (код 401)');
     }
     throw Exception('Помилка сервера (код ${res.statusCode})');
   }
