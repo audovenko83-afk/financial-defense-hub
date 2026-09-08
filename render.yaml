@@ -3,9 +3,13 @@ services:
     name: audovenko-mdw-apits
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: free
+    plan: starter # Starter plan includes persistent disk storage
     envVars:
       - key: PORT
         value: 8080
       - key: DB_PATH
         value: /app/data/app.db
+    disk:
+      name: mdw-data
+      mountPath: /app/data
+      sizeGB: 1

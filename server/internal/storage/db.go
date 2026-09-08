@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -16,12 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const (
-	LegacyUserID       = "legacy"
-	DefaultIBKRToken   = "136314107001211183896714"
-	DefaultIBKRQueryID = "1630618"
-	AdminEmail         = "audovenko83@gmail.com"
-)
+const LegacyUserID = "legacy"
 
 type Storage struct {
 	DB *sql.DB
@@ -31,6 +27,7 @@ type User struct {
 	ID           string
 	Email        string
 	PasswordHash string
+	Role         string
 }
 
 type Position struct {
@@ -102,7 +99,6 @@ type IBKRConnectionInfo struct {
 	Configured   bool   `json:"configured"`
 	QueryID      string `json:"query_id"`
 	TokenMasked  string `json:"token_masked"`
-	Token        string `json:"token,omitempty"`
 	LastSyncAt   string `json:"last_sync_at"`
 	SyncStatus   string `json:"sync_status"`
 	ErrorMessage string `json:"error_message"`
@@ -302,6 +298,7 @@ func NewStorage(dbPath string) (*Storage, error) {
 	_ = addColumnIfMissing(db, "positions", "average_buy_price", "REAL DEFAULT 0")
 	_ = addColumnIfMissing(db, "users", "last_seen_at", "DATETIME DEFAULT CURRENT_TIMESTAMP")
 	_ = addColumnIfMissing(db, "users", "portfolio_mode", "TEXT DEFAULT 'demo'")
+	_ = addColumnIfMissing(db, "users", "role", "TEXT DEFAULT 'user'")
 
 	var exists int
 	db.QueryRow("SELECT COUNT(*) FROM portfolio_meta WHERE key = 'cash'").Scan(&exists)
@@ -309,26 +306,51 @@ func NewStorage(dbPath string) (*Storage, error) {
 		db.Exec("INSERT INTO portfolio_meta (key, value) VALUES ('cash', 10000.0)")
 	}
 
-	// Завжди зберігаємо дефолтні IBKR токен та Query ID для legacy
-	_, _ = db.Exec(`
-		INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
-		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(user_id) DO UPDATE SET flex_token = excluded.flex_token, query_id = excluded.query_id
-	`, LegacyUserID, DefaultIBKRToken, DefaultIBKRQueryID)
-
-	// Якщо вже є адміністратор, автоматично підв'язуємо йому збережений токен та ID
-	var adminUserID string
-	err = db.QueryRow("SELECT id FROM users WHERE LOWER(email) = ?", strings.ToLower(AdminEmail)).Scan(&adminUserID)
-	if err == nil && adminUserID != "" {
-		_, _ = db.Exec(`
-			INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
-			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-			ON CONFLICT(user_id) DO NOTHING
-		`, adminUserID, DefaultIBKRToken, DefaultIBKRQueryID)
-		_, _ = db.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", adminUserID)
+	// Якщо задано змінну середовища INITIAL_ADMIN_EMAIL або ADMIN_EMAIL, автоматично надаємо роль admin
+	initAdmin := strings.TrimSpace(os.Getenv("INITIAL_ADMIN_EMAIL"))
+	if initAdmin == "" {
+		initAdmin = strings.TrimSpace(os.Getenv("ADMIN_EMAIL"))
+	}
+	if initAdmin != "" {
+		_, _ = db.Exec("UPDATE users SET role = 'admin' WHERE LOWER(email) = ?", strings.ToLower(initAdmin))
 	}
 
 	return &Storage{DB: db}, nil
+}
+
+func (s *Storage) IsAdmin(userID string) bool {
+	var role string
+	err := s.DB.QueryRow("SELECT COALESCE(role, 'user') FROM users WHERE id = ?", userID).Scan(&role)
+	return err == nil && strings.ToLower(strings.TrimSpace(role)) == "admin"
+}
+
+func (s *Storage) SetUserRole(userID string, role string) error {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role != "admin" && role != "user" {
+		return errors.New("неприпустима роль (дозволені: user, admin)")
+	}
+	_, err := s.DB.Exec("UPDATE users SET role = ? WHERE id = ?", role, userID)
+	return err
+}
+
+func (s *Storage) SetUserPassword(email string, newPassword string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || len(newPassword) < 8 {
+		return errors.New("email та пароль (мінімум 8 символів) обов'язкові")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	res, err := s.DB.Exec("UPDATE users SET password_hash = ? WHERE LOWER(email) = ?", string(hash), email)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil || rows == 0 {
+		return errors.New("користувача з такою електронною поштою не знайдено")
+	}
+	return nil
 }
 
 func (s *Storage) CreateUser(email string, password string) (User, error) {
@@ -340,23 +362,13 @@ func (s *Storage) CreateUser(email string, password string) (User, error) {
 	if _, err := rand.Read(idBytes); err != nil {
 		return User{}, err
 	}
-	user := User{ID: hex.EncodeToString(idBytes), Email: email, PasswordHash: string(hash)}
-	_, err = s.DB.Exec("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)", user.ID, user.Email, user.PasswordHash)
+	user := User{ID: hex.EncodeToString(idBytes), Email: email, PasswordHash: string(hash), Role: "user"}
+	_, err = s.DB.Exec("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, 'user')", user.ID, user.Email, user.PasswordHash)
 	if err != nil {
 		return User{}, err
 	}
 	// Initial cash for new users: $10,000 to allow realistic simulation immediately
 	_, _ = s.DB.Exec("INSERT OR REPLACE INTO portfolio_meta (key, value) VALUES (?, ?)", cashKey(user.ID), 10000.0)
-
-	// Автоматично налаштовуємо збережені IBKR облікові дані для адміністратора (тільки якщо ще не налаштовані)
-	if strings.EqualFold(email, AdminEmail) {
-		_, _ = s.DB.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", user.ID)
-		_, _ = s.DB.Exec(`
-			INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
-			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-			ON CONFLICT(user_id) DO NOTHING
-		`, user.ID, DefaultIBKRToken, DefaultIBKRQueryID)
-	}
 
 	return user, nil
 }
@@ -367,16 +379,8 @@ func (s *Storage) GetOrCreateOAuthUser(email string, provider string) (User, err
 	}
 
 	var user User
-	err := s.DB.QueryRow("SELECT id, email, password_hash FROM users WHERE email = ?", email).Scan(&user.ID, &user.Email, &user.PasswordHash)
+	err := s.DB.QueryRow("SELECT id, email, password_hash, COALESCE(role, 'user') FROM users WHERE email = ?", email).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.Role)
 	if err == nil {
-		if strings.EqualFold(email, AdminEmail) {
-			_, _ = s.DB.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", user.ID)
-			_, _ = s.DB.Exec(`
-				INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
-				VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-				ON CONFLICT(user_id) DO NOTHING
-			`, user.ID, DefaultIBKRToken, DefaultIBKRQueryID)
-		}
 		return user, nil
 	}
 
@@ -388,31 +392,25 @@ func (s *Storage) GetOrCreateOAuthUser(email string, provider string) (User, err
 		ID:           hex.EncodeToString(idBytes),
 		Email:        email,
 		PasswordHash: "oauth:" + provider,
+		Role:         "user",
 	}
-	_, err = s.DB.Exec("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)", user.ID, user.Email, user.PasswordHash)
+	_, err = s.DB.Exec("INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, 'user')", user.ID, user.Email, user.PasswordHash)
 	if err != nil {
 		return User{}, err
 	}
 	_, _ = s.DB.Exec("INSERT OR REPLACE INTO portfolio_meta (key, value) VALUES (?, ?)", cashKey(user.ID), 10000.0)
 
-	if strings.EqualFold(email, AdminEmail) {
-		_, _ = s.DB.Exec("UPDATE users SET portfolio_mode = 'real' WHERE id = ?", user.ID)
-		_, _ = s.DB.Exec(`
-			INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
-			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-			ON CONFLICT(user_id) DO NOTHING
-		`, user.ID, DefaultIBKRToken, DefaultIBKRQueryID)
-	}
-
 	return user, nil
 }
 
-
 func (s *Storage) AuthenticateUser(email string, password string) (User, error) {
 	var user User
-	err := s.DB.QueryRow("SELECT id, email, password_hash FROM users WHERE email = ?", email).Scan(&user.ID, &user.Email, &user.PasswordHash)
+	err := s.DB.QueryRow("SELECT id, email, password_hash, COALESCE(role, 'user') FROM users WHERE email = ?", email).Scan(&user.ID, &user.Email, &user.PasswordHash, &user.Role)
 	if err != nil {
 		return User{}, errors.New("невірна електронна пошта або пароль")
+	}
+	if strings.HasPrefix(user.PasswordHash, "oauth:") {
+		return User{}, errors.New("цей акаунт було створено через Google/OAuth. Скористайтеся входом через Google або відновленням пароля")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 		return User{}, errors.New("невірна електронна пошта або пароль")
@@ -700,7 +698,7 @@ func (s *Storage) InvestPlan(userID string, amountPerStock float64, items []Stoc
 		}
 		price := item.Price
 		if price <= 0 {
-			price = 100.0
+			return 0, 0, fmt.Errorf("недійсна ціна для %s (має бути більше 0)", ticker)
 		}
 		shares := round6(amountPerStock / price)
 		if shares <= 0 {
@@ -767,14 +765,6 @@ func (s *Storage) GetPortfolio(userID string) (PortfolioData, error) {
 		SELECT COALESCE(query_id, '') != '', COALESCE(last_sync_at, ''), COALESCE(account_id, '')
 		FROM ibkr_connections WHERE user_id = ?
 	`, userID).Scan(&ibkrConfigured, &ibkrLastSyncAt, &ibkrAccountID)
-
-	if !ibkrConfigured {
-		userEmail, _ := s.GetUserEmail(userID)
-		if userID == LegacyUserID || strings.EqualFold(userEmail, AdminEmail) {
-			_, _ = s.SaveIBKRConnection(userID, DefaultIBKRToken, DefaultIBKRQueryID)
-			ibkrConfigured = true
-		}
-	}
 
 	if mode == "real" {
 		var cash float64
@@ -1059,20 +1049,9 @@ func (s *Storage) GetIBKRConnection(userID string) (IBKRConnectionInfo, error) {
 		FROM ibkr_connections WHERE user_id = ?
 	`, userID).Scan(&token, &queryID, &lastSync, &status, &errStr, &accID)
 
-	if err != nil || queryID == "" || token == "" {
-		userEmail, _ := s.GetUserEmail(userID)
-		if userID == LegacyUserID || strings.EqualFold(userEmail, AdminEmail) {
-			token = DefaultIBKRToken
-			queryID = DefaultIBKRQueryID
-			_, _ = s.SaveIBKRConnection(userID, token, queryID)
-			err = nil
-		}
-	}
-
-	if err == nil && queryID != "" {
+	if err == nil && queryID != "" && token != "" {
 		info.Configured = true
 		info.QueryID = queryID
-		info.Token = token
 		info.LastSyncAt = lastSync
 		info.SyncStatus = status
 		info.ErrorMessage = errStr
@@ -1090,18 +1069,25 @@ func (s *Storage) GetIBKRConnection(userID string) (IBKRConnectionInfo, error) {
 func (s *Storage) SaveIBKRConnection(userID, token, queryID string) (string, error) {
 	token = strings.TrimSpace(token)
 	queryID = strings.TrimSpace(queryID)
+
+	var existingToken, existingQueryID string
+	_ = s.DB.QueryRow("SELECT flex_token, query_id FROM ibkr_connections WHERE user_id = ?", userID).Scan(&existingToken, &existingQueryID)
+
 	if queryID == "" {
-		queryID = DefaultIBKRQueryID
+		queryID = existingQueryID
 	}
+	if queryID == "" {
+		return "", errors.New("Query ID не може бути порожнім")
+	}
+
 	if token == "" || strings.Contains(token, "*") {
-		var existingToken string
-		_ = s.DB.QueryRow("SELECT flex_token FROM ibkr_connections WHERE user_id = ?", userID).Scan(&existingToken)
 		if existingToken != "" {
 			token = existingToken
 		} else {
-			token = DefaultIBKRToken
+			return "", errors.New("Flex Token не може бути порожнім")
 		}
 	}
+
 	_, err := s.DB.Exec(`
 		INSERT INTO ibkr_connections (user_id, flex_token, query_id, updated_at)
 		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -1117,13 +1103,6 @@ func (s *Storage) GetIBKRCredentials(userID string) (string, string, error) {
 	var token, queryID string
 	err := s.DB.QueryRow("SELECT flex_token, query_id FROM ibkr_connections WHERE user_id = ?", userID).Scan(&token, &queryID)
 	if err != nil || token == "" || queryID == "" {
-		userEmail, _ := s.GetUserEmail(userID)
-		if userID == LegacyUserID || strings.EqualFold(userEmail, AdminEmail) {
-			token = DefaultIBKRToken
-			queryID = DefaultIBKRQueryID
-			_, _ = s.SaveIBKRConnection(userID, token, queryID)
-			return token, queryID, nil
-		}
 		return "", "", errors.New("IBKR ще не налаштовано для цього користувача")
 	}
 	return token, queryID, nil
@@ -1135,6 +1114,15 @@ func (s *Storage) SaveIBKRSyncSuccess(userID string, accountID string, cash floa
 		return err
 	}
 	defer tx.Rollback()
+
+	// Захист від стирання портфеля порожнім або пошкодженим звітом
+	if len(positions) == 0 {
+		var existingCount int
+		_ = tx.QueryRow("SELECT COUNT(*) FROM ibkr_positions WHERE user_id = ?", userID).Scan(&existingCount)
+		if existingCount > 0 {
+			return errors.New("отримано порожній звіт від IBKR; існуючі позиції не видалено для захисту ваших активів")
+		}
+	}
 
 	_, err = tx.Exec(`
 		UPDATE ibkr_connections

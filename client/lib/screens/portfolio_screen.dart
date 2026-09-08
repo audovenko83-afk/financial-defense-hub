@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:google_sign_in/google_sign_in.dart';
 
+import '../core/api_client.dart';
 import '../core/constants.dart';
 import '../models/models.dart';
 import '../widgets/stock_logo.dart';
@@ -31,7 +32,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   String _userEmail = '';
   DateTime? _lastBackPressTime;
   bool _isHandlingUnauthorized = false;
-  bool _hasAttemptedIBKRAutoRestore = false;
 
   @override
   void initState() {
@@ -67,36 +67,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     });
   }
 
-  Future<void> _tryAutoRestoreIBKRConfig() async {
-    final cached = await SessionStore.getCachedIBKRConfig();
-    if (cached != null && cached['flex_token'] != null && cached['query_id'] != null) {
-      try {
-        final saveRes = await http.post(
-          Uri.parse('${ApiConfig.baseUrl}/ibkr/config'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ${widget.token}',
-          },
-          body: jsonEncode({
-            'flex_token': cached['flex_token'],
-            'query_id': cached['query_id'],
-          }),
-        );
-        if (saveRes.statusCode == 200) {
-          await http.post(
-            Uri.parse('${ApiConfig.baseUrl}/portfolio/mode'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ${widget.token}',
-            },
-            body: jsonEncode({'mode': 'real'}),
-          );
-          _refreshData();
-        }
-      } catch (_) {}
-    }
-  }
-
   Future<PortfolioData> _fetchPortfolio() async {
     final res = await http.get(
       Uri.parse('${ApiConfig.baseUrl}/portfolio'),
@@ -105,12 +75,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     if (res.statusCode == 200) {
       final data = PortfolioData.fromJson(jsonDecode(res.body));
       if (mounted) setState(() => _latestData = data);
-
-      if (!data.ibkrConfigured && !_hasAttemptedIBKRAutoRestore) {
-        _hasAttemptedIBKRAutoRestore = true;
-        _tryAutoRestoreIBKRConfig();
-      }
-
       return data;
     }
     if (res.statusCode == 401) {
@@ -216,6 +180,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             TextField(
               controller: ctrl,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              style: const TextStyle(color: Colors.white),
               decoration: const InputDecoration(labelText: 'Сума (\$)'),
             ),
             const SizedBox(height: 10),
@@ -232,7 +197,13 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Скасувати', style: TextStyle(color: Colors.white54))),
+          TextButton(
+            onPressed: () {
+              ctrl.dispose();
+              Navigator.pop(ctx);
+            },
+            child: const Text('Скасувати', style: TextStyle(color: Colors.white54)),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: const Color(0xFF00FF94),
@@ -241,6 +212,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             ),
             onPressed: () {
               final amount = double.tryParse(ctrl.text) ?? 0;
+              ctrl.dispose();
               Navigator.pop(ctx);
               _depositCash(amount);
             },
@@ -254,44 +226,115 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   void _showSellDialog(Position pos) {
     final sharesCtrl = TextEditingController(text: pos.shares.toString());
     final priceCtrl = TextEditingController(text: pos.currentPrice.toStringAsFixed(2));
+    final isRealMode = _latestData?.mode == 'real';
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF161B26),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        title: Text('Продати ${pos.ticker}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Доступно: ${pos.shares.toStringAsFixed(4)} шт. • Ринкова: \$${pos.currentPrice.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: sharesCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Кількість для продажу (шт.)'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          backgroundColor: const Color(0xFF161B26),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+          title: Text('Продати ${pos.ticker}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Доступно: ${pos.shares.toStringAsFixed(4)} шт. • Ринкова: \$${pos.currentPrice.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  ActionChip(
+                    label: const Text('Продати ВСІ (100%)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                    backgroundColor: Colors.redAccent.withValues(alpha: 0.2),
+                    labelStyle: const TextStyle(color: Colors.redAccent),
+                    onPressed: () {
+                      setDlgState(() {
+                        sharesCtrl.text = pos.shares.toString();
+                      });
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: sharesCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(labelText: 'Кількість для продажу (шт.)'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: priceCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(labelText: 'Ціна продажу (\$)'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                sharesCtrl.dispose();
+                priceCtrl.dispose();
+                Navigator.pop(ctx);
+              },
+              child: const Text('Скасувати', style: TextStyle(color: Colors.white54)),
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: priceCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(labelText: 'Ціна продажу (\$)'),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () async {
+                final s = double.tryParse(sharesCtrl.text) ?? 0;
+                final p = double.tryParse(priceCtrl.text) ?? 0;
+                if (s <= 0 || p <= 0 || s > pos.shares) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(backgroundColor: Colors.redAccent, content: Text('Некоректна кількість або ціна')),
+                  );
+                  return;
+                }
+                sharesCtrl.dispose();
+                priceCtrl.dispose();
+                Navigator.pop(ctx);
+
+                // Confirmation before sell
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (confirmCtx) => AlertDialog(
+                    backgroundColor: const Color(0xFF161B26),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                    title: const Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded, color: Colors.redAccent),
+                        SizedBox(width: 8),
+                        Text('Підтвердження продажу'),
+                      ],
+                    ),
+                    content: Text(
+                      'Ви дійсно бажаєте продати ${s.toStringAsFixed(4)} шт. ${pos.ticker} за ціною \$${p.toStringAsFixed(2)} '
+                      '(Сума: \$${(s * p).toStringAsFixed(2)}) у ${isRealMode ? "РЕАЛЬНОМУ (IBKR)" : "ДЕМО"} режимі?',
+                      style: const TextStyle(color: Colors.white70, height: 1.4),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(confirmCtx, false),
+                        child: const Text('Скасувати'),
+                      ),
+                      FilledButton(
+                        style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+                        onPressed: () => Navigator.pop(confirmCtx, true),
+                        child: const Text('Підтвердити продаж', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                );
+
+                if (confirm == true) {
+                  _sellShares(pos.ticker, s, p);
+                }
+              },
+              child: const Text('Продати', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Скасувати', style: TextStyle(color: Colors.white54))),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () {
-              final s = double.tryParse(sharesCtrl.text) ?? 0;
-              final p = double.tryParse(priceCtrl.text) ?? 0;
-              Navigator.pop(ctx);
-              _sellShares(pos.ticker, s, p);
-            },
-            child: const Text('Продати', style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
       ),
     );
   }
@@ -348,7 +391,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         IBKRConnectionResultDialog.show(
           context,
           result: result,
-          isAdmin: SessionStore.isAdmin(_userEmail),
+          isAdmin: SessionStore.isAdminSync,
           onRetry: () => _syncIBKRFromPortfolio(showDialogResult: true),
           onOpenGuide: _openSettings,
         );
@@ -390,7 +433,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           IBKRConnectionResultDialog.show(
             context,
             result: result,
-            isAdmin: SessionStore.isAdmin(_userEmail),
+            isAdmin: SessionStore.isAdminSync,
             onRetry: () => _syncIBKRFromPortfolio(showDialogResult: true),
             onOpenGuide: _openSettings,
             onTryDemo: _setupDemoIBKRAndSwitch,
@@ -667,8 +710,10 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                 onPressed: () async {
                   final ticker = tickerCtrl.text.trim().toUpperCase();
                   final dollars = double.tryParse(dollarsCtrl.text) ?? 0;
-                  if (ticker.isEmpty || dollars <= 0) return;
+                  tickerCtrl.dispose();
+                  dollarsCtrl.dispose();
                   Navigator.pop(ctx);
+                  if (ticker.isEmpty || dollars <= 0) return;
                   await _buyDollarAmount(ticker, dollars);
                 },
                 child: const Text('Купити зараз', style: TextStyle(fontWeight: FontWeight.w900)),
@@ -681,43 +726,135 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   }
 
   Future<void> _buyDollarAmount(String ticker, double dollars) async {
-    try {
-      final qRes = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/market/quote?ticker=$ticker'),
-        headers: {'Authorization': 'Bearer ${widget.token}'},
+    ticker = ticker.trim().toUpperCase();
+    if (ticker.isEmpty || !RegExp(r'^[A-Z0-9.\-]+$').hasMatch(ticker)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(backgroundColor: Colors.redAccent, content: Text('Некоректний тікер активу')),
       );
-      double price = 100.0;
-      if (qRes.statusCode == 200) {
-        final qData = jsonDecode(qRes.body);
-        price = (qData['price'] as num?)?.toDouble() ?? 100.0;
+      return;
+    }
+    if (dollars.isNaN || dollars.isInfinite || dollars <= 0 || dollars > 10000000) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(backgroundColor: Colors.redAccent, content: Text('Некоректна сума інвестиції')),
+      );
+      return;
+    }
+
+    final currentCash = _latestData?.cash ?? 0.0;
+    if (dollars > currentCash) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.orangeAccent,
+          content: Text('Недостатньо коштів на балансі (\$$dollars, доступно: \$${currentCash.toStringAsFixed(2)})'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final qRes = await ApiClient.get(
+        '/market/quote',
+        token: widget.token,
+        queryParams: {'ticker': ticker},
+      );
+      if (!qRes.isSuccess || qRes.data == null) {
+        throw Exception('Не вдалося отримати актуальну котировку для $ticker. Купівлю заблоковано.');
       }
+      final price = (qRes.data['price'] as num?)?.toDouble() ?? 0.0;
+      if (price <= 0) {
+        throw Exception('Отримана недійсна ціна для $ticker (\$${price.toStringAsFixed(2)}). Купівлю заблоковано.');
+      }
+
       final shares = dollars / price;
-      final res = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/transactions'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ${widget.token}',
-        },
-        body: jsonEncode({
+      final isRealMode = _latestData?.mode == 'real';
+
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF161B26),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: [
+              Icon(Icons.shopping_cart_checkout_rounded, color: isRealMode ? Colors.orangeAccent : const Color(0xFF00FF94)),
+              const SizedBox(width: 10),
+              Text('Купівля $ticker', style: const TextStyle(fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isRealMode ? Colors.orange.withValues(alpha: 0.2) : Colors.green.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  isRealMode ? '🟠 LIVE / IBKR РЕЖИМ' : '🟢 DEMO СИМУЛЯЦІЯ',
+                  style: TextStyle(
+                    color: isRealMode ? Colors.orangeAccent : const Color(0xFF00FF94),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text('• Тікер: $ticker', style: const TextStyle(color: Colors.white, fontSize: 14)),
+              Text('• Ринкова ціна: \$${price.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white70, fontSize: 14)),
+              Text('• Сума купівлі: \$$dollars', style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+              Text('• Розрахункова к-ть: ~${shares.toStringAsFixed(6)} шт.', style: const TextStyle(color: Colors.white70, fontSize: 14)),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Скасувати', style: TextStyle(color: Colors.white54)),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: isRealMode ? Colors.orangeAccent : const Color(0xFF00FF94),
+                foregroundColor: Colors.black,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Підтвердити', style: TextStyle(fontWeight: FontWeight.w900)),
+            ),
+          ],
+        ),
+      );
+
+      if (confirmed != true) return;
+
+      final res = await ApiClient.post(
+        '/transactions',
+        token: widget.token,
+        body: {
           'ticker': ticker,
           'asset_class': 'Stock',
           'shares': shares,
           'price': price,
-        }),
+        },
       );
-      if (res.statusCode == 200) {
+
+      if (res.isSuccess) {
         _refreshData();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(backgroundColor: const Color(0xFF00FF94), content: Text('Куплено $ticker на \$$dollars!', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold))),
+            SnackBar(
+              backgroundColor: const Color(0xFF00FF94),
+              content: Text('Успішно куплено $ticker на \$$dollars!', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            ),
           );
         }
       } else {
-        throw Exception(res.body);
+        throw Exception(res.errorMessage ?? 'Помилка виконання транзакції');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(backgroundColor: Colors.redAccent, content: Text('Помилка: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(backgroundColor: Colors.redAccent, content: Text('Помилка купівлі: $e')),
+        );
       }
     }
   }
@@ -1053,6 +1190,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
   Widget _buildModeBannerCard(PortfolioData data) {
     final bool isReal = data.mode == 'real';
+    final Color badgeColor = isReal ? const Color(0xFFFFB74D) : const Color(0xFF00FF94);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -1060,7 +1198,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         color: const Color(0xFF161B26),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
-          color: isReal ? const Color(0xFF00FF94).withValues(alpha: 0.35) : const Color(0xFF00E5FF).withValues(alpha: 0.25),
+          color: badgeColor.withValues(alpha: 0.35),
         ),
       ),
       child: Row(
@@ -1068,12 +1206,12 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: isReal ? const Color(0xFF00FF94).withValues(alpha: 0.15) : const Color(0xFF00E5FF).withValues(alpha: 0.15),
+              color: badgeColor.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
-              isReal ? Icons.verified_rounded : Icons.sports_esports_rounded,
-              color: isReal ? const Color(0xFF00FF94) : const Color(0xFF00E5FF),
+              isReal ? Icons.verified_user_rounded : Icons.sports_esports_rounded,
+              color: badgeColor,
               size: 20,
             ),
           ),
@@ -1085,19 +1223,19 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                 Row(
                   children: [
                     Text(
-                      isReal ? 'РЕАЛЬНИЙ IBKR' : 'ДЕМО-СИМУЛЯТОР',
+                      isReal ? 'LIVE / IBKR РЕАЛЬНИЙ' : 'DEMO СИМУЛЯТОР',
                       style: TextStyle(
                         fontWeight: FontWeight.w900,
                         fontSize: 12,
                         letterSpacing: 0.5,
-                        color: isReal ? const Color(0xFF00FF94) : const Color(0xFF00E5FF),
+                        color: badgeColor,
                       ),
                     ),
                     const SizedBox(width: 6),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                       decoration: BoxDecoration(
-                        color: isReal ? const Color(0xFF00FF94).withValues(alpha: 0.15) : const Color(0xFF00E5FF).withValues(alpha: 0.15),
+                        color: badgeColor.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
@@ -1105,7 +1243,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                         style: TextStyle(
                           fontSize: 9,
                           fontWeight: FontWeight.w900,
-                          color: isReal ? const Color(0xFF00FF94) : const Color(0xFF00E5FF),
+                          color: badgeColor,
                         ),
                       ),
                     ),
@@ -1115,9 +1253,9 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                 Text(
                   isReal
                       ? (data.ibkrAccountId?.isNotEmpty == true
-                          ? 'Акаунт: ${data.ibkrAccountId}'
-                          : 'Синхронізація через Flex Web Service')
-                      : 'Навчальний портфель Million Dollar Way',
+                          ? 'Рахунок: ${data.ibkrAccountId}${data.ibkrLastSyncAt?.isNotEmpty == true ? " • ${data.ibkrLastSyncAt}" : ""}'
+                          : 'Очікує налаштування Flex Query')
+                      : 'Віртуальний баланс • Без ризику коштів',
                   style: const TextStyle(color: Colors.white54, fontSize: 11),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -1127,7 +1265,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           if (isReal && data.ibkrConfigured) ...[
             IconButton(
               tooltip: 'Синхронізувати з IBKR',
-              icon: const Icon(Icons.sync_rounded, color: Color(0xFF00FF94), size: 20),
+              icon: const Icon(Icons.sync_rounded, color: Color(0xFFFFB74D), size: 20),
               onPressed: _syncIBKRFromPortfolio,
             ),
           ],
@@ -1140,7 +1278,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             child: Text(
               isReal ? 'В Демо' : 'В IBKR',
               style: TextStyle(
-                color: isReal ? const Color(0xFF00E5FF) : const Color(0xFF00FF94),
+                color: isReal ? const Color(0xFF00FF94) : const Color(0xFFFFB74D),
                 fontWeight: FontWeight.bold,
                 fontSize: 12,
               ),

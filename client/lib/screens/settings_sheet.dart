@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../core/constants.dart';
 import '../models/models.dart';
@@ -73,9 +72,14 @@ class _SettingsSheetState extends State<SettingsSheet> {
     SessionStore.readEmail().then((v) {
       if (mounted) {
         setState(() => _email = v);
-        if (SessionStore.isAdmin(v)) {
+        if (SessionStore.isAdminSync) {
           _loadAdminStats();
         }
+      }
+    });
+    SessionStore.checkAdmin().then((admin) {
+      if (mounted && admin) {
+        _loadAdminStats();
       }
     });
     SessionStore.isBiometricsEnabled().then((v) {
@@ -83,6 +87,14 @@ class _SettingsSheetState extends State<SettingsSheet> {
     });
     _loadPortfolioMode();
     _loadIBKRConfig();
+  }
+
+  @override
+  void dispose() {
+    _serverUrlCtrl.dispose();
+    _flexTokenCtrl.dispose();
+    _queryIdCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadPortfolioMode() async {
@@ -102,10 +114,6 @@ class _SettingsSheetState extends State<SettingsSheet> {
 
   Future<void> _loadIBKRConfig() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final localSavedToken = prefs.getString('ibkr_saved_token') ?? '';
-      final localSavedQueryId = prefs.getString('ibkr_saved_query_id') ?? '';
-
       final res = await http.get(
         Uri.parse('${ApiConfig.baseUrl}/ibkr/config'),
         headers: {'Authorization': 'Bearer ${widget.token}'},
@@ -117,45 +125,12 @@ class _SettingsSheetState extends State<SettingsSheet> {
         if (mounted) {
           setState(() {
             _ibkrConfig = cfg;
-
-            final effectiveQueryId = cfg.queryId.isNotEmpty
-                ? cfg.queryId
-                : (localSavedQueryId.isNotEmpty ? localSavedQueryId : IBKRDefaults.defaultQueryId);
-            _queryIdCtrl.text = effectiveQueryId;
-            prefs.setString('ibkr_saved_query_id', effectiveQueryId);
-
-            final effectiveToken = cfg.token.isNotEmpty
-                ? cfg.token
-                : (localSavedToken.isNotEmpty ? localSavedToken : IBKRDefaults.defaultToken);
-            _flexTokenCtrl.text = effectiveToken;
-            prefs.setString('ibkr_saved_token', effectiveToken);
-          });
-        }
-      } else {
-        if (mounted) {
-          setState(() {
-            final effectiveQueryId = localSavedQueryId.isNotEmpty ? localSavedQueryId : IBKRDefaults.defaultQueryId;
-            _queryIdCtrl.text = effectiveQueryId;
-            final effectiveToken = localSavedToken.isNotEmpty ? localSavedToken : IBKRDefaults.defaultToken;
-            _flexTokenCtrl.text = effectiveToken;
+            _queryIdCtrl.text = cfg.queryId;
+            _flexTokenCtrl.text = cfg.tokenMasked;
           });
         }
       }
-    } catch (_) {
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        final localSavedToken = prefs.getString('ibkr_saved_token') ?? '';
-        final localSavedQueryId = prefs.getString('ibkr_saved_query_id') ?? '';
-        if (mounted) {
-          setState(() {
-            final effectiveQueryId = localSavedQueryId.isNotEmpty ? localSavedQueryId : IBKRDefaults.defaultQueryId;
-            _queryIdCtrl.text = effectiveQueryId;
-            final effectiveToken = localSavedToken.isNotEmpty ? localSavedToken : IBKRDefaults.defaultToken;
-            _flexTokenCtrl.text = effectiveToken;
-          });
-        }
-      } catch (_) {}
-    }
+    } catch (_) {}
   }
 
   Future<void> _loadAdminStats() async {
@@ -330,32 +305,18 @@ class _SettingsSheetState extends State<SettingsSheet> {
     }
   }
   Future<void> _saveIBKRConfig() async {
-    final prefs = await SharedPreferences.getInstance();
-    final localSavedToken = prefs.getString('ibkr_saved_token') ?? '';
-    final localSavedQueryId = prefs.getString('ibkr_saved_query_id') ?? '';
-
     String token = _flexTokenCtrl.text.trim();
     String queryId = _queryIdCtrl.text.trim();
 
     if (queryId.isEmpty) {
-      queryId = localSavedQueryId.isNotEmpty ? localSavedQueryId : IBKRDefaults.defaultQueryId;
-      _queryIdCtrl.text = queryId;
-    }
-    if (token.isEmpty || token.contains('*')) {
-      token = localSavedToken.isNotEmpty ? localSavedToken : IBKRDefaults.defaultToken;
-      _flexTokenCtrl.text = token;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(backgroundColor: Colors.orangeAccent, content: Text('Введіть Query ID для збереження налаштувань')),
+      );
+      return;
     }
 
     setState(() => _isSavingIBKR = true);
     try {
-      if (token.isNotEmpty && !token.contains('*') && token != 'DEMO_IBKR') {
-        await prefs.setString('ibkr_saved_token', token);
-      }
-      if (queryId.isNotEmpty && queryId != 'DEMO') {
-        await prefs.setString('ibkr_saved_query_id', queryId);
-      }
-      await SessionStore.saveCachedIBKRConfig(token, queryId);
-
       final res = await http.post(
         Uri.parse('${ApiConfig.baseUrl}/ibkr/config'),
         headers: {
@@ -388,7 +349,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
         IBKRConnectionResultDialog.show(
           context,
           result: result,
-          isAdmin: SessionStore.isAdmin(_email),
+          isAdmin: SessionStore.isAdminSync,
           onRetry: _saveIBKRConfig,
           onOpenGuide: _showIBKRGuideDialog,
           onTryDemo: _fillDemoIBKR,
@@ -408,7 +369,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
         IBKRConnectionResultDialog.show(
           context,
           result: errResult,
-          isAdmin: SessionStore.isAdmin(_email),
+          isAdmin: SessionStore.isAdminSync,
           onRetry: _saveIBKRConfig,
           onOpenGuide: _showIBKRGuideDialog,
           onTryDemo: _fillDemoIBKR,

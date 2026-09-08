@@ -36,7 +36,7 @@ func TestAdminAndIBKRFlow(t *testing.T) {
 		t.Fatalf("expected 403 Forbidden for non-admin, got %d", adminRec.Code)
 	}
 
-	// 3. Register admin user audovenko83@gmail.com
+	// 3. Register another user (even with audovenko83@gmail.com)
 	adminBody, _ := json.Marshal(map[string]string{
 		"email":    "audovenko83@gmail.com",
 		"password": "adminPassword123",
@@ -45,11 +45,29 @@ func TestAdminAndIBKRFlow(t *testing.T) {
 	adminRegRec := httptest.NewRecorder()
 	RegisterHandler(adminRegRec, adminRegReq)
 
-	var adminAuth map[string]string
+	var adminAuth map[string]any
 	json.Unmarshal(adminRegRec.Body.Bytes(), &adminAuth)
-	adminToken := adminAuth["token"]
+	adminToken := adminAuth["token"].(string)
 
-	// 4. Admin accesses admin stats -> 200 OK with 2 users
+	// User should NOT have admin rights just because of their email!
+	adminReqBeforePromote := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	adminReqBeforePromote.Header.Set("Authorization", "Bearer "+adminToken)
+	adminRecBeforePromote := httptest.NewRecorder()
+	AdminStatsHandler(adminRecBeforePromote, adminReqBeforePromote)
+	if adminRecBeforePromote.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden before DB promotion, got %d", adminRecBeforePromote.Code)
+	}
+
+	// 4. Promote user to admin in the database
+	adminUserID, err := store.UserIDForSession(adminToken)
+	if err != nil {
+		t.Fatalf("failed to get user ID: %v", err)
+	}
+	if err := store.SetUserRole(adminUserID, "admin"); err != nil {
+		t.Fatalf("failed to set user role: %v", err)
+	}
+
+	// 5. Admin accesses admin stats -> 200 OK with 2 users
 	adminReq2 := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
 	adminReq2.Header.Set("Authorization", "Bearer "+adminToken)
 	adminRec2 := httptest.NewRecorder()
@@ -175,27 +193,27 @@ func TestSavedTokenAndIDPersistence(t *testing.T) {
 	_, cleanup := setupTestServer(t)
 	defer cleanup()
 
-	// 1. Register admin user
-	adminBody, _ := json.Marshal(map[string]string{
-		"email":    "audovenko83@gmail.com",
-		"password": "adminPassword123",
+	// 1. Register user
+	userBody, _ := json.Marshal(map[string]string{
+		"email":    "user_ibkr@example.com",
+		"password": "userPassword123",
 	})
-	regReq := httptest.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewReader(adminBody))
+	regReq := httptest.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewReader(userBody))
 	regRec := httptest.NewRecorder()
 	RegisterHandler(regRec, regReq)
 
-	var adminAuth map[string]string
-	json.Unmarshal(regRec.Body.Bytes(), &adminAuth)
-	adminToken := adminAuth["token"]
+	var userAuth map[string]any
+	json.Unmarshal(regRec.Body.Bytes(), &userAuth)
+	userToken := userAuth["token"].(string)
 
-	// 2. Query /api/ibkr/config directly WITHOUT manual configuration
+	// 2. Query /api/ibkr/config directly WITHOUT manual configuration -> must be unconfigured!
 	cfgReq := httptest.NewRequest(http.MethodGet, "/api/ibkr/config", nil)
-	cfgReq.Header.Set("Authorization", "Bearer "+adminToken)
+	cfgReq.Header.Set("Authorization", "Bearer "+userToken)
 	cfgRec := httptest.NewRecorder()
 	GetIBKRConfigHandler(cfgRec, cfgReq)
 
 	if cfgRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK for admin config, got %d", cfgRec.Code)
+		t.Fatalf("expected 200 OK for config, got %d", cfgRec.Code)
 	}
 
 	var cfg storage.IBKRConnectionInfo
@@ -203,26 +221,101 @@ func TestSavedTokenAndIDPersistence(t *testing.T) {
 		t.Fatalf("failed to unmarshal config: %v", err)
 	}
 
-	if !cfg.Configured {
-		t.Error("expected admin to be pre-configured with default credentials")
-	}
-	if cfg.QueryID != storage.DefaultIBKRQueryID {
-		t.Errorf("expected QueryID %s, got %s", storage.DefaultIBKRQueryID, cfg.QueryID)
+	if cfg.Configured {
+		t.Error("expected new user to NOT have IBKR configured by default")
 	}
 
-	// 3. Post to /api/ibkr/config with empty fields — should retain and not fail
-	saveReq := httptest.NewRequest(http.MethodPost, "/api/ibkr/config", bytes.NewReader([]byte(`{"flex_token":"","query_id":""}`)))
-	saveReq.Header.Set("Authorization", "Bearer "+adminToken)
+	// 3. Post with empty fields -> should be rejected with 400 Bad Request
+	emptySaveReq := httptest.NewRequest(http.MethodPost, "/api/ibkr/config", bytes.NewReader([]byte(`{"flex_token":"","query_id":""}`)))
+	emptySaveReq.Header.Set("Authorization", "Bearer "+userToken)
+	emptySaveRec := httptest.NewRecorder()
+	SaveIBKRConfigHandler(emptySaveRec, emptySaveReq)
+	if emptySaveRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for empty credentials, got %d", emptySaveRec.Code)
+	}
+
+	// 4. Post valid credentials -> saves and masks token
+	saveReq := httptest.NewRequest(http.MethodPost, "/api/ibkr/config", bytes.NewReader([]byte(`{"flex_token":"DEMO_IBKR","query_id":"DEMO"}`)))
+	saveReq.Header.Set("Authorization", "Bearer "+userToken)
 	saveRec := httptest.NewRecorder()
 	SaveIBKRConfigHandler(saveRec, saveReq)
-
 	if saveRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK on save config, got %d", saveRec.Code)
+		t.Fatalf("expected 200 OK on save config, got %d: %s", saveRec.Code, saveRec.Body.String())
 	}
 
-	// Check that response is valid JSON
-	var saveResult map[string]any
-	if err := json.Unmarshal(saveRec.Body.Bytes(), &saveResult); err != nil {
-		t.Fatalf("save response is not valid JSON: %v", err)
+	// 5. Verify that GET /api/ibkr/config does NOT return plaintext token
+	cfgReq2 := httptest.NewRequest(http.MethodGet, "/api/ibkr/config", nil)
+	cfgReq2.Header.Set("Authorization", "Bearer "+userToken)
+	cfgRec2 := httptest.NewRecorder()
+	GetIBKRConfigHandler(cfgRec2, cfgReq2)
+
+	var rawJson map[string]any
+	json.Unmarshal(cfgRec2.Body.Bytes(), &rawJson)
+	if _, exists := rawJson["token"]; exists {
+		t.Errorf("SECURITY LEAK: plaintext token should NEVER be exposed in API: %v", rawJson["token"])
+	}
+	if rawJson["token_masked"] == "" {
+		t.Error("expected token_masked to be populated")
+	}
+}
+
+func TestOAuthAndSecurityFlows(t *testing.T) {
+	_, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	// 1. Google OAuth with test token
+	googleBody, _ := json.Marshal(map[string]string{
+		"email": "google_user@gmail.com",
+		"token": "test-google-token",
+	})
+	gReq := httptest.NewRequest(http.MethodPost, "/api/auth/google", bytes.NewReader(googleBody))
+	gRec := httptest.NewRecorder()
+	GoogleAuthHandler(gRec, gReq)
+	if gRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for Google test auth, got %d: %s", gRec.Code, gRec.Body.String())
+	}
+
+	// 2. Google OAuth with missing token should fail with 401
+	gEmptyReq := httptest.NewRequest(http.MethodPost, "/api/auth/google", bytes.NewReader([]byte(`{"email":"fake@gmail.com","token":""}`)))
+	gEmptyRec := httptest.NewRecorder()
+	GoogleAuthHandler(gEmptyRec, gEmptyReq)
+	if gEmptyRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for empty Google token, got %d", gEmptyRec.Code)
+	}
+
+	// 3. GitHub OAuth with test token
+	ghBody, _ := json.Marshal(map[string]string{
+		"email": "gh_user@example.com",
+		"token": "test-github-token",
+	})
+	ghReq := httptest.NewRequest(http.MethodPost, "/api/auth/github", bytes.NewReader(ghBody))
+	ghRec := httptest.NewRecorder()
+	GitHubAuthHandler(ghRec, ghReq)
+	if ghRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for GitHub test auth, got %d: %s", ghRec.Code, ghRec.Body.String())
+	}
+
+	// 4. Password Reset
+	resetBody, _ := json.Marshal(map[string]string{
+		"email":        "google_user@gmail.com",
+		"new_password": "NewSecretPassword2026!",
+	})
+	rReq := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", bytes.NewReader(resetBody))
+	rRec := httptest.NewRecorder()
+	ResetPasswordHandler(rRec, rReq)
+	if rRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for password reset, got %d: %s", rRec.Code, rRec.Body.String())
+	}
+
+	// Now can login with new password
+	loginBody, _ := json.Marshal(map[string]string{
+		"email":    "google_user@gmail.com",
+		"password": "NewSecretPassword2026!",
+	})
+	lReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(loginBody))
+	lRec := httptest.NewRecorder()
+	LoginHandler(lRec, lReq)
+	if lRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for login with reset password, got %d", lRec.Code)
 	}
 }

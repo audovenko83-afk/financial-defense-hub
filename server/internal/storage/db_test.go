@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"finance-api/internal/services"
 	"os"
 	"path/filepath"
 	"testing"
@@ -163,3 +164,59 @@ func TestBuyAndSellTransaction(t *testing.T) {
 		t.Fatal("expected error selling non-existent position")
 	}
 }
+
+func TestEmptyIBKRSnapshotProtection(t *testing.T) {
+	s, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	u, err := s.CreateUser("snapshot_user@example.com", "password123")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	// 1. First sync has positions
+	initialPositions := []services.IBKRPosition{
+		{Ticker: "AAPL", CompanyName: "Apple", AssetClass: "Stock", Shares: 10, AverageBuyPrice: 150, CurrentPrice: 160, TotalValue: 1600, Currency: "USD"},
+	}
+	if err := s.SaveIBKRSyncSuccess(u.ID, "U12345", 5000, initialPositions); err != nil {
+		t.Fatalf("initial sync failed: %v", err)
+	}
+
+	// Verify position exists in DB
+	var count int
+	s.DB.QueryRow("SELECT COUNT(*) FROM ibkr_positions WHERE user_id = ?", u.ID).Scan(&count)
+	if count != 1 {
+		t.Fatalf("expected 1 position, got %d", count)
+	}
+
+	// 2. An empty report comes in (malformed or IBKR glitch) -> MUST be rejected to protect data!
+	err = s.SaveIBKRSyncSuccess(u.ID, "U12345", 5000, []services.IBKRPosition{})
+	if err == nil {
+		t.Fatal("expected error on empty IBKR snapshot when user has existing positions")
+	}
+
+	// Verify position is STILL in DB, was NOT wiped out!
+	s.DB.QueryRow("SELECT COUNT(*) FROM ibkr_positions WHERE user_id = ?", u.ID).Scan(&count)
+	if count != 1 {
+		t.Fatalf("expected 1 position retained after empty snapshot attempt, got %d", count)
+	}
+}
+
+func TestInvestPlanRejectsZeroPrice(t *testing.T) {
+	s, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	u, err := s.CreateUser("plan_user@example.com", "password123")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	// Invest plan with 0 price -> must fail without falling back to $100!
+	_, _, err = s.InvestPlan(u.ID, 50, []StockPlanItem{
+		{Ticker: "AAPL", Price: 0, Name: "Apple", AssetClass: "Stock"},
+	})
+	if err == nil {
+		t.Fatal("expected error for invest plan item with 0 price")
+	}
+}
+

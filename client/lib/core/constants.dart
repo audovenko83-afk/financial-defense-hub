@@ -73,14 +73,25 @@ class ApiConfig {
 class SessionStore {
   static const _tokenKey = 'auth_token';
   static const _emailKey = 'user_email';
+  static const _isAdminKey = 'is_admin';
   static const _biometricsKey = 'biometrics_enabled';
 
-  static const List<String> adminEmails = ['audovenko83@gmail.com'];
+  static bool _cachedIsAdmin = false;
 
-  static bool isAdmin(String? email) {
-    if (email == null) return false;
-    final normalized = email.trim().toLowerCase();
-    return adminEmails.any((e) => e.toLowerCase() == normalized);
+  static bool isAdmin([String? email]) {
+    return _cachedIsAdmin;
+  }
+
+  static bool get isAdminSync => _cachedIsAdmin;
+
+  static Future<bool> checkAdmin() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _cachedIsAdmin = prefs.getBool(_isAdminKey) ?? false;
+      return _cachedIsAdmin;
+    } catch (_) {
+      return _cachedIsAdmin;
+    }
   }
 
   static Future<bool> isBiometricsEnabled() async {
@@ -102,18 +113,23 @@ class SessionStore {
   static Future<String?> readToken() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      _cachedIsAdmin = prefs.getBool(_isAdminKey) ?? false;
       return prefs.getString(_tokenKey);
     } catch (_) {
       return null;
     }
   }
 
-  static Future<void> writeToken(String token, {String? email}) async {
+  static Future<void> writeToken(String token, {String? email, bool? isAdmin}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_tokenKey, token);
       if (email != null) {
         await prefs.setString(_emailKey, email);
+      }
+      if (isAdmin != null) {
+        _cachedIsAdmin = isAdmin;
+        await prefs.setBool(_isAdminKey, isAdmin);
       }
     } catch (_) {}
   }
@@ -127,43 +143,16 @@ class SessionStore {
     }
   }
 
-  static const _ibkrTokenKey = 'ibkr_saved_token';
-  static const _ibkrQueryIdKey = 'ibkr_saved_query_id';
-
-  static Future<void> saveCachedIBKRConfig(String token, String queryId) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      if (token.isNotEmpty && !token.contains('*') && token != 'DEMO_IBKR') {
-        await prefs.setString(_ibkrTokenKey, token);
-      }
-      if (queryId.isNotEmpty && queryId != 'DEMO') {
-        await prefs.setString(_ibkrQueryIdKey, queryId);
-      }
-    } catch (_) {}
-  }
-
-  static Future<Map<String, String>?> getCachedIBKRConfig() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString(_ibkrTokenKey);
-      final queryId = prefs.getString(_ibkrQueryIdKey);
-      if (token != null && token.isNotEmpty && queryId != null && queryId.isNotEmpty) {
-        return {'flex_token': token, 'query_id': queryId};
-      }
-    } catch (_) {}
-    return null;
-  }
-
   static Future<void> deleteToken() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_tokenKey);
       await prefs.remove(_emailKey);
+      await prefs.remove(_isAdminKey);
+      // Purge any old plaintext IBKR keys from insecure SharedPreferences
+      await prefs.remove('ibkr_saved_token');
+      await prefs.remove('ibkr_saved_query_id');
+      _cachedIsAdmin = false;
     } catch (_) {}
   }
-}
-
-class IBKRDefaults {
-  static const String defaultToken = '136314107001211183896714';
-  static const String defaultQueryId = '1630618';
 }

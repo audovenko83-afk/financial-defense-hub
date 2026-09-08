@@ -28,6 +28,7 @@ func main() {
 	mux.HandleFunc("/api/portfolio", handlers.GetPortfolioHandler)
 	mux.HandleFunc("/api/auth/register", handlers.RegisterHandler)
 	mux.HandleFunc("/api/auth/login", handlers.LoginHandler)
+	mux.HandleFunc("/api/auth/reset-password", handlers.ResetPasswordHandler)
 	mux.HandleFunc("/api/auth/account", handlers.DeleteAccountHandler)
 	mux.HandleFunc("/api/auth/google", handlers.GoogleAuthHandler)
 	mux.HandleFunc("/api/auth/github", handlers.GitHubAuthHandler)

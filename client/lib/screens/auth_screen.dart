@@ -4,6 +4,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 import 'package:local_auth/local_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../core/api_client.dart';
 import '../core/constants.dart';
 import 'portfolio_screen.dart';
 
@@ -36,6 +37,13 @@ class _AuthScreenState extends State<AuthScreen> {
     _restoreSession();
   }
 
+  @override
+  void dispose() {
+    emailController.dispose();
+    passwordController.dispose();
+    super.dispose();
+  }
+
   Future<void> _restoreSession() async {
     final token = await SessionStore.readToken();
     if (!mounted) return;
@@ -46,6 +54,7 @@ class _AuthScreenState extends State<AuthScreen> {
           _savedToken = null;
           _showBiometricUnlockButton = false;
           isRestoringSession = false;
+          errorMessage = null;
         });
       }
       return;
@@ -79,7 +88,7 @@ class _AuthScreenState extends State<AuthScreen> {
             _savedToken = null;
             _showBiometricUnlockButton = false;
             isRestoringSession = false;
-            errorMessage = 'Попередня сесія завершилась або сервер було перезапущено.\nБудь ласка, увійдіть знову через Google або логін та пароль.';
+            errorMessage = null; // Clean! No alarming red error on startup
           });
         }
         return;
@@ -208,7 +217,8 @@ class _AuthScreenState extends State<AuthScreen> {
       if (response.statusCode == 200 || response.statusCode == 201) {
         final data = jsonDecode(response.body);
         final token = data['token'] as String;
-        await SessionStore.writeToken(token, email: email);
+        final isAdmin = (data['is_admin'] as bool?) ?? (data['role'] == 'admin');
+        await SessionStore.writeToken(token, email: email, isAdmin: isAdmin);
 
         if (!mounted) return;
         Navigator.pushReplacement(
@@ -222,10 +232,10 @@ class _AuthScreenState extends State<AuthScreen> {
             if (bodyMsg.isNotEmpty && !bodyMsg.startsWith('<')) {
               errorMessage = bodyMsg;
             } else {
-              errorMessage = 'Невірна пошта або пароль.\nЯкщо ви раніше заходили через Google — скористайтеся кнопкою Google нижче.';
+              errorMessage = 'Невірна пошта або пароль.\nЯкщо ви раніше заходили через Google — скористайтеся кнопкою Google або скиданням пароля нижче.';
             }
           } else if (response.statusCode == 409) {
-            errorMessage = 'Користувач із такою поштою вже існує.\nЯкщо ви реєструвалися через Google — натисніть кнопку Google нижче.';
+            errorMessage = 'Користувач із такою поштою вже існує.\nЯкщо ви реєструвалися через Google — натисніть кнопку Google або скидання пароля.';
           } else {
             errorMessage = 'Помилка сервера: $bodyMsg';
           }
@@ -241,6 +251,7 @@ class _AuthScreenState extends State<AuthScreen> {
       if (mounted) setState(() => isLoading = false);
     }
   }
+
   Future<void> _signInWithGoogle() async {
     setState(() {
       isLoading = true;
@@ -253,33 +264,39 @@ class _AuthScreenState extends State<AuthScreen> {
       } catch (_) {}
       final GoogleSignInAccount? account = await googleSignIn.signIn();
       if (account == null) {
-        if (mounted) setState(() => isLoading = false);
+        if (mounted) {
+          setState(() {
+            isLoading = false;
+            errorMessage = 'Вхід через Google скасовано або не налаштовано клієнт у Google Cloud Console.';
+          });
+        }
         return;
       }
 
       final GoogleSignInAuthentication auth = await account.authentication;
+      final idToken = auth.idToken ?? auth.accessToken ?? '';
 
-      final res = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/auth/google'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
+      final res = await ApiClient.post(
+        '/auth/google',
+        body: {
           'email': account.email,
           'name': account.displayName ?? '',
-          'token': auth.idToken ?? auth.accessToken ?? '',
+          'token': idToken,
           'provider': 'google',
-        }),
-      ).timeout(const Duration(seconds: 10));
+        },
+        timeout: const Duration(seconds: 15),
+      );
 
       if (!mounted) return;
 
-      if (res.statusCode == 200 || res.statusCode == 201) {
-        final data = jsonDecode(res.body);
-        final token = data['token'] as String;
-        await SessionStore.writeToken(token, email: account.email);
+      if (res.isSuccess && res.data != null) {
+        final token = res.data['token'] as String;
+        final isAdmin = (res.data['is_admin'] as bool?) ?? (res.data['role'] == 'admin');
+        await SessionStore.writeToken(token, email: account.email, isAdmin: isAdmin);
         _navigateToPortfolio(token);
       } else {
         setState(() {
-          errorMessage = 'Помилка Google авторизації: ${res.body}';
+          errorMessage = res.errorMessage ?? 'Помилка Google авторизації';
         });
       }
     } catch (e) {
@@ -348,6 +365,8 @@ class _AuthScreenState extends State<AuthScreen> {
       ),
     );
 
+    githubUserCtrl.dispose();
+
     if (result == null || result.isEmpty) return;
 
     setState(() {
@@ -357,26 +376,27 @@ class _AuthScreenState extends State<AuthScreen> {
 
     try {
       final email = result.contains('@') ? result : '$result@users.noreply.github.com';
-      final res = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/auth/github'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
+      final res = await ApiClient.post(
+        '/auth/github',
+        body: {
           'email': email,
           'name': result,
+          'token': 'test-github-token',
           'provider': 'github',
-        }),
-      ).timeout(const Duration(seconds: 10));
+        },
+        timeout: const Duration(seconds: 12),
+      );
 
       if (!mounted) return;
 
-      if (res.statusCode == 200 || res.statusCode == 201) {
-        final data = jsonDecode(res.body);
-        final token = data['token'] as String;
-        await SessionStore.writeToken(token, email: email);
+      if (res.isSuccess && res.data != null) {
+        final token = res.data['token'] as String;
+        final isAdmin = (res.data['is_admin'] as bool?) ?? (res.data['role'] == 'admin');
+        await SessionStore.writeToken(token, email: email, isAdmin: isAdmin);
         _navigateToPortfolio(token);
       } else {
         setState(() {
-          errorMessage = 'Помилка GitHub авторизації: ${res.body}';
+          errorMessage = res.errorMessage ?? 'Помилка GitHub авторизації';
         });
       }
     } catch (e) {
@@ -387,6 +407,135 @@ class _AuthScreenState extends State<AuthScreen> {
     } finally {
       if (mounted) setState(() => isLoading = false);
     }
+  }
+
+  void _showResetPasswordDialog() {
+    final emailCtrl = TextEditingController(text: emailController.text.trim());
+    final newPassCtrl = TextEditingController();
+    bool isSubmitting = false;
+    String? dialogError;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) => AlertDialog(
+          backgroundColor: const Color(0xFF161B26),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.lock_reset_rounded, color: Color(0xFF00FF94)),
+              SizedBox(width: 8),
+              Text('Встановити / Скинути пароль', style: TextStyle(fontSize: 16)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Вкажіть пошту вашого акаунту (наприклад, зареєстрованого через Google) та новий пароль (мін. 8 символів):',
+                style: TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: emailCtrl,
+                keyboardType: TextInputType.emailAddress,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  labelText: 'Email',
+                  filled: true,
+                  fillColor: const Color(0xFF0F131C),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: newPassCtrl,
+                obscureText: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  labelText: 'Новий пароль (мін. 8 символів)',
+                  filled: true,
+                  fillColor: const Color(0xFF0F131C),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+              if (dialogError != null) ...[
+                const SizedBox(height: 10),
+                Text(dialogError!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: isSubmitting
+                  ? null
+                  : () {
+                      emailCtrl.dispose();
+                      newPassCtrl.dispose();
+                      Navigator.pop(ctx);
+                    },
+              child: const Text('Скасувати'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF00FF94),
+                foregroundColor: Colors.black,
+              ),
+              onPressed: isSubmitting
+                  ? null
+                  : () async {
+                      final email = emailCtrl.text.trim().toLowerCase();
+                      final pass = newPassCtrl.text;
+                      if (email.isEmpty || pass.length < 8) {
+                        setDlgState(() => dialogError = 'Введіть email та пароль не менше 8 символів');
+                        return;
+                      }
+                      setDlgState(() {
+                        isSubmitting = true;
+                        dialogError = null;
+                      });
+                      try {
+                        final res = await ApiClient.post(
+                          '/auth/reset-password',
+                          body: {'email': email, 'new_password': pass},
+                        );
+                        if (!ctx.mounted) return;
+                        if (res.isSuccess) {
+                          emailCtrl.dispose();
+                          newPassCtrl.dispose();
+                          Navigator.pop(ctx);
+                          if (mounted) {
+                            emailController.text = email;
+                            passwordController.text = pass;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                backgroundColor: Color(0xFF00FF94),
+                                content: Text('Пароль успішно встановлено! Тепер натисніть «Увійти».', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                              ),
+                            );
+                          }
+                        } else {
+                          setDlgState(() {
+                            isSubmitting = false;
+                            dialogError = res.errorMessage ?? 'Не вдалося встановити пароль';
+                          });
+                        }
+                      } catch (e) {
+                        setDlgState(() {
+                          isSubmitting = false;
+                          dialogError = 'Помилка: $e';
+                        });
+                      }
+                    },
+              child: isSubmitting
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
+                  : const Text('Зберегти пароль', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
 
@@ -678,6 +827,13 @@ class _AuthScreenState extends State<AuthScreen> {
                   child: Text(
                     isRegistering ? 'Вже маєте акаунт? Увійти' : 'Створити профіль',
                     style: const TextStyle(color: Color(0xFF00E0FF)),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _showResetPasswordDialog,
+                  child: const Text(
+                    'Забули або хочете встановити пароль?',
+                    style: TextStyle(color: Colors.white54, fontSize: 12),
                   ),
                 ),
                 const SizedBox(height: 16),
